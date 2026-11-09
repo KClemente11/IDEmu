@@ -3,7 +3,7 @@ import os, re, json, time, shutil, sys, threading, traceback, mimetypes, datetim
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from importlib import import_module
 from urllib.parse import urlparse, parse_qs
-from . import catalog, codegen, coding, stats, phone, cluster
+from . import catalog, codegen, coding, stats, phone, cluster, vin, sysfiles
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENVS = os.path.abspath(os.environ.get('IDEMU_ENVS') or os.path.join(catalog.STATE_DIR, 'environments'))
@@ -128,27 +128,32 @@ class App:
         require_system_files(d)
         name = (d.get('name') or '').strip() or 'Novo ambiente'
         eid = self._free_id(slug(name), d.get('home'))
+        dvin = ((d.get('coding') or {}).get('vin') or '').upper()
+        if dvin and not vin.VIN_RE.match(dvin): raise ApiError('VIN deve ter 17 caracteres (sem I, O, Q)')
         if d.get('kind') == 'mgu7':
+            from . import coding7
             from . import coding7
             role = d.get('role') or 'hu'
             if role not in ('hu', 'rse'): raise ApiError('tela do iDrive 7 desconhecida (use hu ou rse)')
             rse = role == 'rse'
             env = {'id': eid, 'name': name, 'created': datetime.datetime.now().isoformat(timespec='seconds'), 'kind': 'mgu7', 'role': role, 'series': 'RSE' if rse else 'HU', 'chassis': 'RSE' if rse else 'HU', 'brand': 'bmw',
-                   'model_name': 'BMW RSE (banco traseiro)' if rse else 'BMW iDrive 7 (tela central)', 'swfl': {},
-                   'coding': {'language': 'en_GB', 'units': 'metric', 'country': 'GB', 'vin': '', 'display': '1920x1080' if rse else '1920x720', 'hmi_version': 'id7', 'navi': '',
+                   'model_name': d.get('model_name') or 'BMW RSE (banco traseiro)' if rse else 'BMW iDrive 7 (tela central)', 'swfl': {},
+                   'coding': {'language': 'en_GB', 'units': 'metric', 'country': 'GB', 'vin': dvin, 'display': '1920x1080' if rse else '1920x720', 'hmi_version': 'id7', 'navi': '',
                               'extra': {} if rse else dict(coding7.DEFAULT_HU)}, 'net': {}}
             return self._save_new(env, d.get('home'))
         if d.get('kind') == 'cic':
             env = {'id': eid, 'name': name, 'created': datetime.datetime.now().isoformat(timespec='seconds'), 'kind': 'cic', 'series': 'E90', 'chassis': 'CIC', 'brand': 'bmw',
-                   'model_name': 'BMW CIC High (iDrive 4)', 'swfl': {}, 'coding': {'language': 'de_DE', 'units': 'metric', 'country': 'DE', 'vin': '', 'display': '1280x480', 'hmi_version': 'id4', 'navi': ''}, 'net': {}}
+                   'model_name': d.get('model_name') or 'BMW CIC High (iDrive 4)', 'swfl': {}, 'coding': {'language': 'de_DE', 'units': 'metric', 'country': 'DE', 'vin': dvin, 'display': '1280x480', 'hmi_version': 'id4', 'navi': ''}, 'net': {}}
             return self._save_new(env, d.get('home'))
         if d.get('kind') == 'mgu22':
             env = {'id': eid, 'name': name, 'created': datetime.datetime.now().isoformat(timespec='seconds'), 'kind': 'mgu22', 'series': 'G70', 'chassis': 'G70', 'brand': 'bmw',
-                   'model_name': 'BMW i7', 'swfl': {}, 'coding': {'language': 'en_GB', 'units': 'metric', 'country': 'GB', 'vin': '', 'display': '14_9_2880x960', 'hmi_version': 'id8', 'navi': ''}, 'net': {}}
+                   'model_name': d.get('model_name') or 'BMW i7', 'swfl': {}, 'coding': {'language': 'en_GB', 'units': 'metric', 'country': 'GB', 'vin': dvin, 'display': '14_9_2880x960', 'hmi_version': 'id8', 'navi': ''}, 'net': {}}
             return self._save_new(env, d.get('home'))
         sw = d.get('swfl') or {}
         cd = dict({'language': 'en_GB', 'units': 'metric', 'country': 'GB', 'vin': '', 'year': 2017, 'month': 7, 'lci': 1,
-                   'display': '10_25_1440x540', 'hmi_version': 'id6_light', 'navi': 'keine_navi'}, **(d.get('coding') or {}))
+                   'display': '10_25_1440x540', 'hmi_version': 'id6_light', 'navi': 'ece', 'hu_variant': 'professional'}, **(d.get('coding') or {}))
+        if not catalog.hu_variant(cd.get('hu_variant')): raise ApiError('tipo de head unit desconhecido: %s' % cd.get('hu_variant'))
+        cd['navi'] = codegen.navi_value(cd.get('navi'), cd.get('country'))
         if cd.get('vin') and not re.match(r'^[A-HJ-NPR-Z0-9]{17}$', cd['vin'].upper()): raise ApiError('VIN deve ter 17 caracteres (sem I, O, Q)')
         net = dict({'ssh_port': 2222, 'can_port': 29536, 'gps_port': 29537}, **(d.get('net') or {}))
         env = {'id': eid, 'name': name, 'created': datetime.datetime.now().isoformat(timespec='seconds'),
@@ -171,9 +176,14 @@ class App:
             require_system_files(env)
             env['coding'].update(d['coding'])
         if 'net' in d: env['net'].update(d['net'])
+        for k in ('chassis', 'series', 'model_name'):
+            if d.get(k) is not None: env[k] = d[k]
+        if not env.get('kind'):
+            if env['coding'].get('hu_variant') and not catalog.hu_variant(env['coding']['hu_variant']): raise ApiError('tipo de head unit desconhecido')
+            if codegen.enum_values('BAUREIHE') and env['chassis'] not in codegen.enum_values('BAUREIHE'): raise ApiError('chassi desconhecido: ' + env['chassis'])
         self.save_env(env)
-        # recodificar: refaz só o shim (rápido) se o ambiente já foi compilado
-        if 'coding' in d and not env.get('kind') and self.build_info(eid)['state'] == 'ready':
+        # recodificar: refaz só o shim (rápido) se o ambiente já foi compilado (só o iDrive 5/6 tem shim; os outros aplicam a codificação na próxima partida)
+        if not env.get('kind') and self.build_info(eid)['state'] == 'ready' and ('coding' in d or 'chassis' in d):
             from . import builder
             try:
                 tmp = os.path.join(self.env_dir(eid), 'work'); os.makedirs(tmp, exist_ok=True)
@@ -203,7 +213,12 @@ class App:
         if self.rt and self.rt.id == eid and self.rt.state != 'stopped': raise ApiError('pare o ambiente antes de compilar')
         b = self.builds.get(eid)
         if b and b['state'] == 'building': raise ApiError('já compilando')
-        if kind is not None and self.build_info(eid, env)['state'] == 'ready': return
+        if (self.flashes.get(eid) or {}).get('state') == 'running': raise ApiError('aguarde a gravação da codificação terminar')
+        if kind is not None:
+            if self.build_info(eid, env)['state'] == 'ready':
+                self.builds.pop(eid, None); return
+            for oid, ob in self.builds.items():
+                if oid != eid and ob.get('state') == 'building' and self.env_kind(oid) == kind: raise ApiError('outro ambiente já está montando a imagem desta geração; aguarde')
         b = {'state': 'building', 'pct': 0, 'step': 'Iniciando', 'error': None, 'built_at': None, 'log': []}
         self.builds[eid] = b
         def log(s): b['log'].append(str(s)); b['log'] = b['log'][-300:]
@@ -223,7 +238,11 @@ class App:
                 log(traceback.format_exc()); b['state'] = 'error'; b['error'] = str(e)
         threading.Thread(target=run, daemon=True).start()
     def delete(self, eid):
-        if self.rt and self.rt.id == eid and self.rt.state != 'stopped': raise ApiError('pare o ambiente antes de excluir')
+        if self.rt and self.rt.id == eid and self.rt.state in ('booting', 'running'): raise ApiError('pare o ambiente antes de excluir')
+        if (self.builds.get(eid) or {}).get('state') == 'building': raise ApiError('aguarde o build terminar antes de excluir')
+        if (self.flashes.get(eid) or {}).get('state') == 'running': raise ApiError('aguarde a gravação da codificação terminar')
+        if self.rt and self.rt.id == eid: self.rt.stop(); self.rt = None
+        self.builds.pop(eid, None); self.flashes.pop(eid, None); sysfiles.forget(eid)
         d = self.env_dir(eid)
         if os.path.islink(d):                          # VM numa pasta escolhida: apaga só a subpasta <home>/<id> que o IDEmu criou e depois o link
             real = os.path.realpath(d); os.unlink(d)
@@ -246,14 +265,19 @@ class App:
             elif os.path.isfile(s): shutil.copy(s, t)
         return self.load_env(nid)
     # ---- execução ----
-    def start(self, eid, cold=False):
+    def start(self, eid, cold=False, *, during_flash=False):
         if self.rt and self.rt.state in ('booting', 'running'): raise ApiError('já existe um ambiente em execução; pare-o primeiro')
         env = self.read_env(eid)
         require_system_files(env)
         if sys.platform == 'win32': raise ApiError('Use the WSL launcher to run the head unit on Windows.', 409)
         if self.build_info(eid, env)['state'] != 'ready': raise ApiError('compile o ambiente antes de iniciar')
+        if not during_flash and (self.flashes.get(eid) or {}).get('state') == 'running': raise ApiError('aguarde a gravação da codificação terminar')
+        if self.rt and self.rt.state != 'stopped':          # o anterior parou com erro: encerra o que tiver sobrado dele (QEMU, renderizador, portas CAN/GPS)
+            try: self.rt.stop()
+            except Exception: traceback.print_exc()
         k = env.get('kind')
         self.rt = getattr(runtime_module(k), RUNTIME_TYPES[k])(self.env_dir(eid), env)
+        self.last_id = eid
         try: self.rt.start(cold=cold)
         except Exception as e: raise ApiError(str(e), 500)
     # ---- codificação (coding) ----
@@ -306,7 +330,7 @@ class App:
                 shutil.rmtree(tmp, ignore_errors=True)
                 if was_running:
                     j['step'] = 2
-                    self.start(eid)
+                    self.start(eid, during_flash=True)
                     rt = self.rt; end = time.time() + 300
                     while rt.state == 'booting' and time.time() < end: time.sleep(0.2)
                     if rt.state != 'running': raise RuntimeError(rt.err or 'a head unit não voltou depois da gravação')
@@ -338,7 +362,7 @@ class App:
         try:
             if restore: env['coding'] = coding.read_backup(self.env_dir(eid), restore)['coding']; done = []
             else:
-                if reset: env['coding']['extra'] = {}
+                if reset: env['coding']['extra'] = dict(cmod.DEFAULT_HU) if not k8 and env.get('role', 'hu') == 'hu' else {}
                 done = cmod.apply_changes(env, changes or {})
             blob = cmod.build_tab(env) if k8 else cmod.build_blob(env)
             want = len((blob or ''.join('x\n' for _ in cmod.factory_tab())).splitlines()) if k8 else (len(blob) if blob else 0)
@@ -357,7 +381,7 @@ class App:
                 shutil.rmtree(os.path.join(self.env_dir(eid), 'snapshot'), ignore_errors=True)       # o estado salvo embute a codificação antiga
                 if was_running:
                     j['step'] = 2
-                    self.start(eid)
+                    self.start(eid, during_flash=True)
                     rt = self.rt; end = time.time() + 400
                     while rt.state == 'booting' and time.time() < end: time.sleep(0.3)
                     if rt.state != 'running': raise RuntimeError(rt.err or 'a head unit não voltou depois da gravação')
@@ -380,6 +404,34 @@ class App:
         return dict(j)
     def stop(self):
         if self.rt: self.rt.stop()
+    def apply_vin(self, eid, v, variant=None):
+        """Coloca o VIN no ambiente e ajusta o carro a ele (chassi, série, ano, HMI, mercado). A marca e a geração do iDrive não mudam num ambiente pronto."""
+        env = self.load_env(eid)
+        try: dec = vin.decode(v, wait=True)
+        except ValueError as e: raise ApiError(str(e))
+        sug = dec['env']; notes = list(dec.get('notes') or [])
+        gen_env = {'cic': 'id4', 'mgu7': 'id7', 'mgu22': 'id8'}.get(env.get('kind')) or ('id5' if (env['coding'].get('hmi_version') or '').startswith('id5') else 'id6')
+        upd = {'coding': {'vin': dec['vin']}}
+        if not env.get('kind'):
+            same_family = sug.get('generation') in ('id5', 'id6')
+            if dec.get('found') and same_family:
+                if catalog.BRAND_SWFL.get(sug['brand']) != catalog.BRAND_SWFL.get(env.get('brand')):
+                    notes.append('O VIN é de um %s e o ambiente usa os arquivos da marca %s: o chassi não foi trocado (crie um ambiente novo para essa marca).' % (sug['brand'].upper(), (env.get('brand') or '').upper()))
+                else:
+                    upd.update(chassis=sug['chassis'], series=sug['series'] or env.get('series'), model_name=sug['model_name'])
+                    c = dict(sug['coding']); c.pop('display', None)
+                    if variant:
+                        hv = catalog.hu_variant(variant)
+                        if not hv: raise ApiError('tipo de head unit desconhecido')
+                        c['hu_variant'] = variant; c['display'] = hv['display']
+                    else: c.pop('hu_variant', None)
+                    upd['coding'].update(c)
+            elif sug.get('generation'): notes.append('Esse carro saiu de fábrica com o %s; este ambiente emula o %s. Só o VIN foi gravado.' % (sug['generation'].replace('id', 'iDrive '), gen_env.replace('id', 'iDrive ')))
+        elif dec.get('found'):
+            upd['model_name'] = ' '.join(x for x in [sug.get('chassis'), sug.get('model_name')] if x)
+            if sug.get('generation') and sug['generation'] != gen_env: notes.append('Esse carro saiu de fábrica com o %s; este ambiente emula o %s.' % (sug['generation'].replace('id', 'iDrive '), gen_env.replace('id', 'iDrive ')))
+        if self.rt and self.rt.id == eid and self.rt.state in ('booting', 'running'): notes.append('Reinicie o ambiente para o HMI ler a nova codificação.')
+        return {'env': self.update(eid, upd), 'decode': dec, 'notes': notes}
     def need_rt(self):
         if not self.rt or self.rt.state in ('stopped',): raise ApiError('nenhum ambiente em execução', 409)
         return self.rt
@@ -454,9 +506,20 @@ class H(BaseHTTPRequestHandler):
         except Exception: raise ApiError('JSON inválido')
     def do_GET(self): self._route('GET')
     def do_POST(self): self._route('POST')
+    def _foreign(self):
+        """Pedido vindo de outro site (CSRF) ou por outro nome de host (DNS rebinding)? A API só atende a própria interface."""
+        port = self.server.server_address[1]
+        host = (self.headers.get('Host') or '').lower()
+        loop = self.server.server_address[0] in ('127.0.0.1', 'localhost', '::1')
+        if loop and host not in ('127.0.0.1:%d' % port, 'localhost:%d' % port, '[::1]:%d' % port): return True
+        if (self.headers.get('Sec-Fetch-Site') or '') == 'cross-site': return True
+        org = self.headers.get('Origin')
+        if org and org != 'null' and urlparse(org).netloc.lower() != host: return True
+        return False
     def _route(self, m):
         u = urlparse(self.path); q = {k: v[0] for k, v in parse_qs(u.query).items()}
         try:
+            if u.path.startswith('/api/') and self._foreign(): raise ApiError('pedido de outra origem recusado', 403)
             if u.path.startswith('/api/'):
                 r = self.api(m, u.path[5:].strip('/'), q)
                 if isinstance(r, tuple): self._send(*r)
@@ -533,13 +596,34 @@ class H(BaseHTTPRequestHandler):
             ids = [i for i in (d.get('ids') or []) if re.match(r'^[0-9a-fA-F]{8}$', str(i))]
             if not ids: raise ApiError('nenhum arquivo para procurar')
             r = catalog.scan_folder(root, ids); r['path'] = root; return r
+        if path == 'vin/decode':
+            try: return vin.decode(q.get('vin') or d.get('vin'))
+            except ValueError as e: raise ApiError(str(e))
         if path == 'stats': return get_stats().snapshot(q.get('env'), float(q.get('since', 0) or 0))
         if P[0] == 'env' and path == 'env/create' and m == 'POST': return A.create(d)
         if P[0] == 'env' and len(P) >= 2:
             eid = P[1]
             if len(P) == 2: return A.load_env(eid)
             act = P[2]
+            if act in ('update', 'start', 'stop', 'delete', 'duplicate', 'snapshot', 'vin') and m != 'POST': raise ApiError('use POST', 405)
             if act == 'update': return A.update(eid, d)
+            if act == 'vin': return A.apply_vin(eid, d.get('vin'), d.get('hu_variant'))
+            if act == 'files':
+                sub = P[3] if len(P) > 3 else ''
+                env = A.load_env(eid)
+                if not sub: return sysfiles.listdir(env, A.env_dir(eid), q.get('path', ''))
+                if sub == 'status': return sysfiles.status(env, A.env_dir(eid))
+                if sub == 'extract' and m == 'POST':
+                    require_system_files(env)
+                    return sysfiles.start_extract(env, A.env_dir(eid))
+                if sub == 'remove' and m == 'POST': return sysfiles.remove(env, A.env_dir(eid))
+                if sub == 'reveal' and m == 'POST': return sysfiles.reveal(env, A.env_dir(eid), d.get('path', ''))
+                if sub == 'raw':
+                    body, ctype, name = sysfiles.read(env, A.env_dir(eid), q.get('path', ''))
+                    disp = 'inline' if q.get('inline') else 'attachment'
+                    from urllib.parse import quote
+                    return 200, body, ctype, {'Content-Disposition': "%s; filename*=UTF-8''%s" % (disp, quote(name))}
+                raise ApiError('rota desconhecida', 404)
             if act == 'build' and m == 'POST': A.start_build(eid); return {'ok': True}
             if act == 'build':
                 A.load_env(eid); b = A.builds.get(eid); i = A.build_info(eid)
@@ -599,8 +683,9 @@ class H(BaseHTTPRequestHandler):
         if path == 'run/frame':                          # próximo quadro, cru (RGB): a tela do navegador pede o seguinte assim que desenha este
             rt = A.need_rt(); since = int(q.get('since', -1)); end = time.time() + 1.5
             seq = rt.frame_seq()
+            nap = 0.002
             while seq == since and time.time() < end and rt.state in ('booting', 'running'):
-                time.sleep(0.004); seq = rt.frame_seq()
+                time.sleep(nap); nap = min(nap * 1.5, 0.012); seq = rt.frame_seq()      # espera curta logo depois do quadro anterior, mais longa em tela parada
             rgba = q.get('fmt') == 'rgba' and hasattr(rt, 'frame_rgba')        # iDrive 7: o quadro já é RGBA; nada de converter no servidor nem no navegador
             fr = rt.frame_rgba() if rgba else rt.frame_bytes()
             if not fr or fr[0] == since: return 204, b'', 'application/octet-stream', {'X-Frame-Seq': str(seq)}
@@ -629,15 +714,13 @@ class H(BaseHTTPRequestHandler):
             rt = A.rt
             if name == 'guest':
                 return {'lines': (list(rt.con)[-tail:] if rt else [])}
-            envd = A.env_dir(rt.id) if rt else None
-            if not envd:
-                lastenv = [e['id'] for e in A.list_envs()][:1]
-                if not lastenv: return {'lines': []}
-                envd = A.env_dir(lastenv[0])
+            eid = q.get('env') or (rt.id if rt else None) or getattr(A, 'last_id', None)       # sem nada rodando: o último ambiente iniciado nesta sessão
+            if not eid: return {'lines': []}
+            envd = A.env_dir(eid)
             f = os.path.join(envd, 'logs', {'console': 'console.log', 'qemu': 'qemu.log', 'renderer': 'renderer.log', 'v850': 'v850.log'}.get(name, 'x'))
             if name == 'build':
-                eid = [k for k in A.builds][:1]
-                return {'lines': A.builds[eid[0]]['log'][-tail:] if eid else []}
+                b = A.builds.get(eid) or next(iter(A.builds.values()), None)
+                return {'lines': b['log'][-tail:] if b else []}
             if not os.path.isfile(f): return {'lines': []}
             with open(f, 'rb') as fh:
                 fh.seek(0, 2); sz = fh.tell(); fh.seek(max(0, sz - 65536)); txt = fh.read().decode('utf-8', 'replace')

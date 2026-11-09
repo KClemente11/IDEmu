@@ -299,8 +299,13 @@
     }
     function applyStatus(s) {
       R.status = s;
-      const bz = s.kind === 'mgu22' ? 'id8' : s.kind === 'mgu7' ? 'rse' : s.kind === 'cic' ? 'cic' : 'id6';
-      if (bezelBox.dataset.k !== bz) { bezelBox.dataset.k = bz; bezelImg.src = { id8: 'bezel_id8.jpg', rse: 'bezel_rse.jpg', cic: 'bezel_cic.jpg', id6: 'bezel.jpg' }[bz]; }
+      const envR = s.env ? IDE.envById(s.env) : null;
+      const bz = s.kind === 'mgu22' ? 'id8' : s.kind === 'mgu7' ? ((s.role || (envR && envR.role)) === 'rse' ? 'rse' : 'id7') : s.kind === 'cic' ? 'cic' : 'id6';     // iDrive 7: tela central do Série 8 (G15); RSE só no ambiente do banco traseiro
+      if (s.disp && s.disp[0] && !R.haveImage && dispWrap.dataset.disp !== String(s.disp)) {
+        dispWrap.dataset.disp = String(s.disp); dispWrap.style.setProperty('--ar', String(s.disp[0] / s.disp[1]));
+        dispSize.textContent = IDE.t('{w} × {h} · clique na tela para tocar', { w: s.disp[0], h: s.disp[1] });
+      }
+      if (bezelBox.dataset.k !== bz) { bezelBox.dataset.k = bz; bezelImg.src = { id8: 'bezel_id8.jpg', id7: 'bezel_id7.jpg', rse: 'bezel_rse.jpg', cic: 'bezel_cic.jpg', id6: 'bezel.jpg' }[bz]; }
       const mgu = !!s.kind;     // iDrive 8: sem CAN, GPS, mapa, SSH, V850 nem editor de codificação por enquanto
       codingLink.style.display = s.kind === 'cic' ? 'none' : '';
       if (s.kind === 'cic' && img.width) dispSize.textContent = IDE.t('{w} × {h} · sem tela de toque (use o controlador)', { w: img.width, h: img.height });      // o iDrive 7 tem o editor de codificação
@@ -308,8 +313,11 @@
       tabBar.querySelectorAll('button').forEach((b) => { b.style.display = mgu && b.dataset.tab !== 'logs' && b.dataset.tab !== 'phone' ? 'none' : ''; });
       if (mgu && R.activeTab !== 'logs' && R.activeTab !== 'phone') selectTab('logs');
       const env = s.env ? IDE.envById(s.env) : null;
-      IDE.clear(barEnv);
-      IDE.add(barEnv, ic('car', 20), h('span', null, env ? env.name : (s.env || 'Nenhum ambiente')), env ? h('span', { class: 'muted small' }, [env.chassis, IDE.brandName(env.brand)].join(' · ')) : null);
+      const envSig = env ? env.id + '|' + env.name + '|' + env.chassis : String(s.env);
+      if (barEnv.dataset.sig !== envSig) {           // o status chega 4 vezes por segundo no boot: só refaz o cabeçalho quando o ambiente muda
+        barEnv.dataset.sig = envSig; IDE.clear(barEnv);
+        IDE.add(barEnv, ic('car', 20), h('span', null, env ? env.name : (s.env || 'Nenhum ambiente')), env ? h('span', { class: 'muted small' }, [env.chassis, IDE.brandName(env.brand)].join(' · ')) : null);
+      }
       const [t, k] = STATE_TXT[s.state] || [s.state, 'muted'];
       barState.className = 'badge ' + k; barState.textContent = IDE.t(t);
       barUp.textContent = s.state === 'stopped' ? '' : IDE.t('Tempo ligado {t}', { t: IDE.fmtDur(s.uptime_s) });
@@ -341,7 +349,7 @@
     function paint(rgb, w, hh, rgba) {
       if (img.width !== w || img.height !== hh) {
         img.width = w; img.height = hh; imgData = null;
-        dispWrap.style.aspectRatio = w + ' / ' + hh; dispSize.textContent = R.status && R.status.kind === 'cic' ? IDE.t('{w} × {h} · sem tela de toque (use o controlador)', { w, h: hh }) : IDE.t('{w} × {h} · clique na tela para tocar', { w, h: hh });
+        dispWrap.style.aspectRatio = w + ' / ' + hh; dispWrap.style.setProperty('--ar', String(w / hh)); dispSize.textContent = R.status && R.status.kind === 'cic' ? IDE.t('{w} × {h} · sem tela de toque (use o controlador)', { w, h: hh }) : IDE.t('{w} × {h} · clique na tela para tocar', { w, h: hh });
       }
       if (rgba) { ctx2d.putImageData(new ImageData(new Uint8ClampedArray(rgb.buffer, rgb.byteOffset, w * hh * 4), w, hh), 0, 0); return; }     // RGBA pronto: sem laço por pixel
       if (!imgData) { imgData = ctx2d.createImageData(w, hh); imgData.data.fill(255); }
@@ -354,6 +362,7 @@
       while (!dead()) {
         const st = R.status && R.status.state;
         if (st !== 'running' && st !== 'booting') { since = -1; await new Promise((r) => setTimeout(r, 200)); continue; }
+        if (document.hidden) { await new Promise((r) => setTimeout(r, 500)); continue; }       // aba ou janela escondida: não puxa quadros de vários MB à toa
         try {
           const r = await fetch('/api/run/frame?fmt=rgba&since=' + since, { cache: 'no-store' });
           if (r.status === 200) {
@@ -370,7 +379,7 @@
       let s;
       try { s = await api('/api/run/status'); } catch (e) { return; }
       if (!dead()) applyStatus(s);
-    }, () => (R.status && (R.status.state === 'running' || R.status.state === 'booting') ? 250 : 1000));
+    }, () => (document.hidden ? 2000 : R.status && R.status.state === 'booting' ? 250 : R.status && R.status.state === 'running' ? 700 : 1000));
     setOverlay('wait', 'Conectando…');
     frameLoop();
     const offState = IDE.on('state', () => { if (R.status) applyStatus(R.status); });

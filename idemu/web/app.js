@@ -69,7 +69,7 @@
   const BUILD_BADGE = {
     none: ['Não compilado', 'muted'], building: ['Compilando', 'info'], ready: ['Pronto', 'ok'], error: ['Erro no build', 'danger'],
   };
-  const BRAND = { bmw: 'BMW', mini: 'MINI', rr: 'Rolls-Royce' };
+  const BRAND = { bmw: 'BMW', bmw_i: 'BMW i', bmw_m: 'BMW M', mini: 'MINI', rr: 'Rolls-Royce' };
   IDE.brandName = (b) => BRAND[b] || String(b || '').toUpperCase();
 
   function envsMount(root) {
@@ -92,10 +92,12 @@
       b.addEventListener('click', () => fn(b));
       return b;
     }
+    function huName(v) { const x = ((IDE.catalog && IDE.catalog.hu_variants) || []).find((y) => y.id === (v || 'professional')); return x ? x.name : 'Navigation Professional'; }
     function bootRow(e, running) {
       const sn = e.snapshot || {};
+      if (e.kind === 'cic' || e.kind === 'mgu22') return null;          // sem estado salvo (boot rápido) no iDrive 4 e 8
       const cb = h('input', { type: 'checkbox', checked: e.fast_boot !== false, disabled: running, 'aria-label': 'Fast boot', onchange: async () => { try { await post('/api/env/' + e.id + '/update', { fast_boot: cb.checked }); await IDE.refreshState(); } catch (er) { toastErr(er); } } });
-      const cold = h('button', { class: 'link', type: 'button', disabled: running || !!IDE.state.running || e.runtime_available === false, onclick: () => startEnv(e, null, true) }, 'Full boot');
+      const cold = h('button', { class: 'link', type: 'button', disabled: running || !!IDE.state.running || e.runtime_available === false, onclick: (ev) => startEnv(e, ev.currentTarget, true) }, 'Full boot');
       const del = sn.valid ? h('button', { class: 'link', type: 'button', disabled: running, onclick: async () => { try { await post('/api/env/' + e.id + '/snapshot/delete'); await IDE.refreshState(); } catch (er) { toastErr(er); } } }, 'Delete saved state') : null;
       return h('div', { class: 'env-boot' },
         h('label', { class: 'check' }, cb, h('span', null, 'Fast boot')),
@@ -124,8 +126,13 @@
       bb.disabled = bs === 'building' || running || e.files_ok === false;
       actions.push(bb);
       const bc = btn('', 'gear', 'Coding', () => IDE.go('coding/' + e.id), 'Edit the coding of this head unit');
-      bc.disabled = bs !== 'ready';
+      bc.disabled = bs !== 'ready' || e.kind === 'cic';
+      if (e.kind === 'cic') bc.title = IDE.t('a edição de codificação ainda não existe para o iDrive 4');
       actions.push(bc);
+      const bf = btn('', 'folder', 'Arquivos', () => IDE.sysFilesDialog(e), 'Ver os arquivos do sistema do iDrive, descompactados');
+      bf.disabled = bs !== 'ready' && !!e.kind;
+      const bv = btn('', 'target', 'VIN', () => IDE.vinDialog(e), 'Ajustar o ambiente ao carro pelo VIN'); bv.disabled = running || bs === 'building';
+      actions.push(bf, bv);
       const bd = btn('', 'copy', 'Duplicar', () => dupEnv(e)); bd.disabled = running;
       const bx = btn('ghost-danger', 'trash', 'Excluir', () => delEnv(e)); bx.disabled = running;
       actions.push(bd, bx);
@@ -139,10 +146,12 @@
             h('div', { class: 'env-sub' }, [e.chassis, IDE.brandName(e.brand), e.model_name].filter(Boolean).join(' · '))),
           IDE.badge(bt, bk)),
         h('dl', { class: 'kv' },
+          h('div', null, h('dt', null, 'iDrive'), h('dd', null, IDE.genName(e.kind === 'cic' ? 'id4' : e.kind === 'mgu7' ? 'id7' : e.kind === 'mgu22' ? 'id8' : String(c.hmi_version || '').startsWith('id5') ? 'id5' : 'id6') + (e.kind === 'mgu7' ? ' · ' + IDE.t(e.role === 'rse' ? 'banco traseiro (RSE)' : 'tela central') : ''))),
+          !e.kind ? h('div', null, h('dt', null, 'Head unit'), h('dd', null, huName(c.hu_variant))) : null,
           h('div', null, h('dt', null, 'Série'), h('dd', null, e.series || '–')),
           h('div', null, h('dt', null, 'VIN'), h('dd', { class: 'mono' }, c.vin || '–')),
           h('div', null, h('dt', null, 'Idioma / país'), h('dd', null, (c.language || '–') + ' · ' + (c.country || '–'))),
-          h('div', null, h('dt', null, 'Portas'), h('dd', { class: 'mono' }, 'SSH ' + n.ssh_port + ' · CAN ' + n.can_port + ' · GPS ' + n.gps_port)),
+          !e.kind ? h('div', null, h('dt', null, 'Portas'), h('dd', { class: 'mono' }, 'SSH ' + n.ssh_port + ' · CAN ' + n.can_port + ' · GPS ' + n.gps_port)) : null,
           h('div', null, h('dt', null, 'Compilado em'), h('dd', null, IDE.fmtDate(e.build.built_at))),
           e.home ? h('div', null, h('dt', null, 'Pasta da VM'), h('dd', { class: 'mono wrapany', title: e.home + '/' + e.id }, e.home + '/' + e.id)) : null),
         prog,
@@ -214,6 +223,7 @@
     const off = IDE.on('state', () => { renderEnvs(); });
     renderEnvs();
     IDE.refreshState().catch(() => {});
+    IDE.loadCatalog().then(() => { cards.clear(); IDE.clear(grid); renderEnvs(); }).catch(() => {});     // nomes dos tipos de head unit
     return { unmount() { off(); } };
   }
   IDE.views.envs = { mount: envsMount };

@@ -15,7 +15,7 @@ def run_wsl(root, argv):
     if not 1024 <= options.port <= 65535:
         parser.error('--port must be between 1024 and 65535')
     command = ['wsl.exe', '--distribution', options.distro, '--cd', str(root), '--exec',
-               'env', 'IDEMU_PORTABLE=1', 'sh', 'tools/windows-wsl.sh', '--port', str(options.port)]
+               'sh', 'tools/windows-wsl.sh', '--port', str(options.port)]
     if options.no_browser:
         command.append('--no-browser')
     try:

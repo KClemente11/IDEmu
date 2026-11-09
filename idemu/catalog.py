@@ -8,22 +8,61 @@ SETTINGS = os.path.join(STATE_DIR, 'settings.json')
 WSL = bool(os.environ.get('IDEMU_WSL'))
 
 def load_settings():
-    try: return json.load(open(SETTINGS))
-    except Exception: return {}
+    paths = [SETTINGS]
+    if WSL and STATE_DIR != ROOT_DIR:
+        paths.append(os.path.join(ROOT_DIR, 'settings.json'))
+    for path in paths:
+        try:
+            with open(path) as f: return json.load(f)
+        except FileNotFoundError:
+            continue
+        except (ValueError, OSError):
+            return {}
+    default = os.path.expanduser('~/IDEmu')
+    return {'psdz_path': default} if WSL and psdz_ok(default) else {}
 
 def save_settings(d):
     s = load_settings(); s.update(d)
-    json.dump(s, open(SETTINGS, 'w'), indent=1)
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(SETTINGS, 'w') as f: json.dump(s, f, indent=1)
 
+# Séries com NBT Evo (iDrive 5/6) e os chassis de cada uma, conferidos na base KIS da PSdZData (kiswb/<série>/KIS.data, campo EBR dos tipos de veículo).
 SERIES_INFO = {
-    'F001': ('Série 7 (F01/F02/F04)', ['F01', 'F02', 'F03', 'F04'], 'bmw'),
-    'F010': ('Série 5/6 (F06/F07/F10/F11/F12/F13)', ['F06', 'F07', 'F10', 'F11', 'F12', 'F13', 'F18'], 'bmw'),
-    'F020': ('Série 1/2/3/4 (F2x/F3x)', ['F20', 'F21', 'F22', 'F23', 'F30', 'F31', 'F32', 'F33', 'F34', 'F35', 'F36', 'F39', 'F40', 'F44'], 'bmw'),
-    'F025': ('X1/X3/X4/X5/X6 (F15/F16/F25/F26)', ['F15', 'F16', 'F25', 'F26'], 'bmw'),
-    'F056': ('MINI (F54/F55/F56/F57/F60)', ['F54', 'F55', 'F56', 'F57', 'F60'], 'mini'),
-    'I001': ('BMW i (i3/i8)', ['F01'], 'bmw_i'),
-    'S15A': ('Série 5 China/diversos (S15A)', ['F10', 'F18'], 'bmw'),
+    'F001': ('Série 7 (F01/F02/F03) e Rolls-Royce Ghost', ['F01', 'F02', 'F03', 'RR04'], 'bmw'),
+    'F010': ('Série 5/6 (F06/F07/F10/F11/F12/F13/F18)', ['F06', 'F07', 'F10', 'F11', 'F12', 'F13', 'F18'], 'bmw'),
+    'F020': ('Série 1/2/3/4, M2/M3/M4 (F2x/F3x/F8x)', ['F20', 'F21', 'F22', 'F23', 'F30', 'F31', 'F32', 'F33', 'F34', 'F35', 'F36', 'F80', 'F82', 'F83', 'F87'], 'bmw'),
+    'F025': ('X3/X4/X5/X6, X5 M/X6 M (F15/F16/F25/F26/F85/F86)', ['F15', 'F16', 'F25', 'F26', 'F85', 'F86'], 'bmw'),
+    'F056': ('X1/X2/Série 2 Active e Gran Tourer, MINI (F39/F4x/F5x/F60)', ['F39', 'F45', 'F46', 'F48', 'F49', 'F52', 'F54', 'F55', 'F56', 'F57', 'F60'], 'bmw'),
+    'I001': ('BMW i3 e i8 (I01/I12/I15)', ['I01', 'I12', 'I15'], 'bmw_i'),
+    'S15A': ('Série 5/6 GT/7, X3/X4, M5 e Rolls-Royce (G01/G02/G11/G12/G30/G31/G32/F90)', ['G01', 'G02', 'G11', 'G12', 'G30', 'G31', 'G32', 'F90', 'F97', 'F98', 'RR11', 'RR12', 'RR31'], 'bmw'),
 }
+CHASSIS_BRAND = {'F54': 'mini', 'F55': 'mini', 'F56': 'mini', 'F57': 'mini', 'F60': 'mini', 'I01': 'bmw_i', 'I12': 'bmw_i', 'I15': 'bmw_i',
+                 'RR04': 'rr', 'RR11': 'rr', 'RR12': 'rr', 'RR31': 'rr'}
+CHASSIS_NAMES = {
+    'F01': 'Série 7', 'F02': 'Série 7 longo', 'F03': 'Série 7 blindado', 'F06': 'Série 6 Gran Coupé', 'F07': 'Série 5 GT', 'F10': 'Série 5 sedã', 'F11': 'Série 5 Touring',
+    'F12': 'Série 6 conversível', 'F13': 'Série 6 cupê', 'F18': 'Série 5 longo (China)', 'F20': 'Série 1 5 portas', 'F21': 'Série 1 3 portas', 'F22': 'Série 2 cupê',
+    'F23': 'Série 2 conversível', 'F30': 'Série 3 sedã', 'F31': 'Série 3 Touring', 'F32': 'Série 4 cupê', 'F33': 'Série 4 conversível', 'F34': 'Série 3 GT',
+    'F35': 'Série 3 longo (China)', 'F36': 'Série 4 Gran Coupé', 'F80': 'M3 sedã', 'F82': 'M4 cupê', 'F83': 'M4 conversível', 'F87': 'M2 cupê',
+    'F15': 'X5', 'F16': 'X6', 'F25': 'X3', 'F26': 'X4', 'F85': 'X5 M', 'F86': 'X6 M', 'F39': 'X2', 'F45': 'Série 2 Active Tourer', 'F46': 'Série 2 Gran Tourer',
+    'F48': 'X1', 'F49': 'X1 longo (China)', 'F52': 'Série 1 sedã (China)', 'F54': 'MINI Clubman', 'F55': 'MINI 5 portas', 'F56': 'MINI 3 portas',
+    'F57': 'MINI conversível', 'F60': 'MINI Countryman', 'I01': 'i3', 'I12': 'i8 cupê', 'I15': 'i8 Roadster', 'G01': 'X3', 'G02': 'X4', 'G11': 'Série 7',
+    'G12': 'Série 7 longo', 'G30': 'Série 5 sedã', 'G31': 'Série 5 Touring', 'G32': 'Série 6 GT', 'F90': 'M5', 'F97': 'X3 M', 'F98': 'X4 M',
+    'RR04': 'Rolls-Royce Ghost', 'RR11': 'Rolls-Royce Phantom', 'RR12': 'Rolls-Royce Phantom longo', 'RR31': 'Rolls-Royce Cullinan'}
+def chassis_brand(code, default='bmw'): return CHASSIS_BRAND.get(code, default)
+NAVI_NAMES = {'keine_navi': 'Sem navegação', 'ece': 'Europa e resto do mundo (ECE)', 'us': 'América do Norte (US)', 'japan': 'Japão', 'china': 'China', 'korea': 'Coreia do Sul',
+              'hongkong': 'Hong Kong', 'taiwan': 'Taiwan', 'navi_vorbereitung': 'Preparação para navegação', 'tv_ohne_navi': 'TV sem navegação',
+              'permanente_sli_anzeige_ece': 'Sem navegação, com limite de velocidade (ECE)'}
+# Tipos de head unit que o IDEmu monta sobre o firmware do NBT Evo (a PSdZData só traz o firmware do HU_NBTEVO; o EntryNav e o Business são reproduzidos pela
+# codificação: tamanho e resolução do display, navegação e toque, como nos carros que saíam com essas unidades).
+HU_VARIANTS = [
+    {'id': 'professional', 'name': 'Navigation Professional', 'sub': 'NBT Evo · display de 10,25" 1440 × 540 · navegação · tela de toque',
+     'display': '10_25_1440x540', 'navi': True, 'touch': True},
+    {'id': 'business', 'name': 'Navigation Business', 'sub': 'Display de 8,8" 1280 × 480 · navegação · tela de toque',
+     'display': '8_8_1280x480', 'navi': True, 'touch': True},
+    {'id': 'entrynav', 'name': 'EntryNav', 'sub': 'Display de 6,5" 800 × 480 · navegação · sem tela de toque (só o controlador)',
+     'display': '6_5_800x480', 'navi': True, 'touch': False},
+]
+def hu_variant(vid): return next((v for v in HU_VARIANTS if v['id'] == vid), None)
 ROLE_TEXT = {
     'os': ('Sistema base (QNX, serviços, drivers, boot)', 'Contém o IFS de boot e o sistema de arquivos da head unit (bin, lib, etc, opt/sys...).'),
     'brand': ('Dados da marca (temas, widgets, textos)', 'Recursos visuais e de conteúdo da marca selecionada (BMW, MINI, Rolls-Royce).'),
@@ -63,7 +102,7 @@ FEATURES = [('screen', 'Tela e interface real do HMI'), ('touch', 'Toque na tela
             ('map', 'GPS e mapa'), ('cluster', 'Cluster e HUD'), ('phone', 'Celular conectado'), ('coding', 'Editor de codificação'),
             ('ssh', 'Acesso SSH'), ('media', 'Rádio, mídia e áudio'), ('usb', 'Pen drive'), ('stable', 'Estabilidade')]
 LEVEL_NOTES = {
-    'id6': {'can': ('half', 'Alguns itens do menu Meu Veículo seguem cinzas'), 'cluster': ('half', 'Painel virtual pelo CAN e pelo GPS; o HMI não manda conteúdo a ele'),
+    'id6': {'can': ('half', 'Velocidade, marcha, terminal e estado dos pneus chegam ao HMI; autonomia, tanque e computador de bordo ainda não'), 'cluster': ('half', 'Painel virtual pelo CAN e pelo GPS; o HMI não manda conteúdo a ele'),
             'media': ('none', 'Sem rádio nem fonte de áudio'), 'usb': ('none', 'Sem controlador USB virtual')},
     'id5': {'touch': ('half', 'A tela leva vários segundos para refletir cada toque'), 'rotor': ('half', 'A tela leva vários segundos para refletir cada entrada'),
             'can': ('half', 'Mesma ponte do iDrive 6, menos testada'), 'map': ('none', 'O HMI cai nos menus de navegação; mapa não verificado'),
@@ -102,11 +141,14 @@ for _g in GENERATIONS: _g['level'] = level_of(_g['id'])
 DIRECT_BACKENDS = {'cic': 'cic', 'mgu7': 'mgu7', 'mgu22': 'mgu'}
 
 def backend_supported(kind):
-    return kind is None or (kind in DIRECT_BACKENDS and not WSL and sys.platform != 'win32')
+    if kind is None: return True
+    if WSL:
+        qemu = os.path.join(ROOT_DIR, 'bin', 'qemu-system-sh4')
+        return kind == 'cic' and os.path.isfile(qemu) and os.access(qemu, os.X_OK)
+    return kind in DIRECT_BACKENDS and sys.platform != 'win32'
 
-if WSL or sys.platform == 'win32':
-    for _g in GENERATIONS:
-        if _g.get('direct'): _g['supported'] = False
+for _g in GENERATIONS:
+    _g['supported'] = backend_supported(_g.get('direct'))
 
 def scan_folder(root, wanted, max_depth=7, max_seconds=25):
     # Procura em root arquivos swfl_<id>.bin.<versão> (ids em wanted): raiz do psdzdata, pasta swe/swfl ou qualquer pasta que os contenha.
@@ -150,12 +192,12 @@ def build_catalog(psdz):
     cat = {'psdz_ok': ok, 'series': [], 'roles': [], 'by_series': {}, 'languages': [{'code': c, 'name': n} for c, n in LANGS],
            'countries': [{'code': c, 'name': n} for c, n in COUNTRIES], 'displays': [{'code': c, 'name': n} for c, n in DISPLAYS],
            'hmi_versions': [{'code': c, 'name': n} for c, n in (('id6_light', 'iDrive 6 (tiles)'), ('id6', 'iDrive 6 completo'), ('id5', 'iDrive 5'))],
-           'navi': [{'code': c, 'name': c} for c in codegen.enum_values('NAVI_VARIANTE')], 'generations': GENERATIONS}
+           'navi': [{'code': c, 'name': NAVI_NAMES.get(c, c)} for c in codegen.enum_values('NAVI_VARIANTE')], 'generations': GENERATIONS, 'hu_variants': HU_VARIANTS}
     baureihe = set(codegen.enum_values('BAUREIHE'))
     sids = series_available(psdz) if ok else sorted(SERIES_INFO)      # sem a pasta psdzdata, o catálogo vem da lista interna
     for sid in sids:
         name, chs, brand = SERIES_INFO[sid]
-        cat['series'].append({'id': sid, 'name': name, 'chassis': [{'code': c, 'name': c, 'brand': brand, 'ego_model': c} for c in chs if not baureihe or c in baureihe]})
+        cat['series'].append({'id': sid, 'name': name, 'chassis': [{'code': c, 'name': CHASSIS_NAMES.get(c, c), 'brand': chassis_brand(c, brand), 'ego_model': c} for c in chs if not baureihe or c in baureihe]})
         cat['by_series'][sid] = {'roles': {'os': OS_SWFL, 'brand': dict(BRAND_SWFL), 'hmi': HMI_SWFL}}
     brand_names = {'00002719': 'BMW', '00002716': 'MINI', '00002718': 'Rolls-Royce'}
     roles = [('os', OS_SWFL), ('hmi', HMI_SWFL)] + [('brand', i) for i in ('00002719', '00002716', '00002718')]
@@ -198,9 +240,18 @@ def required_packages(kind):
                 {'id': '00009ff9', 'version': MGU22_VER, 'label': 'Extras (EXT)', 'role': 'data', 'help': 'Dados adicionais do iDrive 8'}]
     return []
 
+def _psdz_roots(kind, psdz):
+    if not psdz: return []
+    roots = [psdz, os.path.join(psdz, 'psdzdata')]
+    folder = {'cic': 'CIC', 'mgu7': 'ID7', 'mgu22': 'id8'}.get(kind)
+    if folder: roots.append(os.path.join(psdz, folder))
+    return roots
+
 def _search_dirs(kind, psdz):
     dirs = []
-    if psdz: dirs += [os.path.join(psdz, 'swe', 'swfl'), os.path.join(psdz, 'psdzdata', 'swe', 'swfl'), psdz]
+    for root in _psdz_roots(kind, psdz):
+        dirs.append(os.path.join(root, 'swe', 'swfl'))
+    if psdz: dirs.append(psdz)
     dirs.append(os.path.join(STAGE, 'swe', 'swfl'))
     if kind == 'cic': dirs.append(os.path.expanduser('~/Downloads/System files/ID4'))
     return dirs
@@ -268,7 +319,9 @@ def effective_psdz(kind):
     # pasta no formato PSdZData que os montadores leem: a PSdZData salva se tem tudo, senão o estágio (links)
     psdz = load_settings().get('psdz_path')
     st = package_status(kind, psdz)
-    if psdz and all(os.path.exists(os.path.join(psdz, 'swe', 'swfl', i['file'])) for i in st['items']): return psdz
+    for root in _psdz_roots(kind, psdz):
+        if st['items'] and all(os.path.isfile(os.path.join(root, 'swe', 'swfl', i['file'])) for i in st['items']):
+            return root
     d = os.path.join(STAGE, 'swe', 'swfl'); os.makedirs(d, exist_ok=True)
     for i in st['items']:
         if i['found']:

@@ -293,14 +293,14 @@ class Mgu7Runtime(runtime.Runtime):
             ql = open(os.path.join(self.logd, 'qemu.log'), 'wb')
             if restore:
                 self.step = 'Restaurando o estado salvo'; self.pct = 10
-                self.q = subprocess.Popen(cmd, stdout=ql, stderr=subprocess.STDOUT)
+                self._spawn('q', cmd, stdout=ql, stderr=subprocess.STDOUT)
                 for _ in range(1200):                                          # o monitor só responde depois do -loadvm
                     if self.q.poll() is not None: raise RuntimeError('o QEMU terminou (%s) ao restaurar; veja logs/qemu.log' % self.q.returncode)
                     try:
                         if 'paused' in self.hmp('info status', 5): break
                     except OSError: pass
                     time.sleep(0.1)
-                self.gl = subprocess.Popen(glcmd, stdout=hl, stderr=hl, env=genv); ready = os.path.join(self.run, 'gl.ready')
+                self._spawn('gl', glcmd, stdout=hl, stderr=hl, env=genv); ready = os.path.join(self.run, 'gl.ready')
                 for _ in range(1200):
                     if os.path.exists(ready): break
                     if self.gl.poll() is not None: raise RuntimeError('o renderizador terminou (%s) ao reproduzir o fluxo; veja logs/renderer.log' % self.gl.returncode)
@@ -311,10 +311,10 @@ class Mgu7Runtime(runtime.Runtime):
                 self.hmp('cont'); self._fix_guest_clock_later = True
                 threading.Thread(target=lambda: (time.sleep(1.5), self._fix_guest_clock()), daemon=True).start()
             else:
-                self.gl = subprocess.Popen(glcmd, stdout=hl, stderr=hl, env=genv)
-                self.q = subprocess.Popen(cmd, stdout=ql, stderr=subprocess.STDOUT)       # parado (-S) até o tscfix liberar
+                self._spawn('gl', glcmd, stdout=hl, stderr=hl, env=genv)
+                self._spawn('q', cmd, stdout=ql, stderr=subprocess.STDOUT)       # parado (-S) até o tscfix liberar
                 tl = open(os.path.join(self.logd, 'tscfix.log'), 'wb')
-                self.tscfix = subprocess.Popen([sys.executable, '-I', TOOLS + '/tscfix.py', str(port)], stdout=tl, stderr=subprocess.STDOUT)
+                self._spawn('tscfix', [sys.executable, '-I', TOOLS + '/tscfix.py', str(port)], stdout=tl, stderr=subprocess.STDOUT)
                 threading.Thread(target=self._console_thread, args=(csock,), daemon=True).start()
                 threading.Thread(target=self._input_thread, args=(isock,), daemon=True).start()
                 self.step = 'Iniciando o sistema do carro'; self.pct = 5
@@ -333,6 +333,7 @@ class Mgu7Runtime(runtime.Runtime):
                 if capable and not restore and not snap_started and self.state == 'running' and not self.snap_valid():
                     snap_started = True; threading.Thread(target=self._snapshot_when_settled, daemon=True).start()
                 time.sleep(0.25)
+        except runtime.BootStopped: pass
         except Exception as e:
             if not self.stop_ev.is_set(): self.err = str(e); self.state = 'error'; self._kill_children()
     STEPS = {'vsomeipd': 'Iniciando os serviços SOME/IP', 'codingshm': 'Carregando a codificação', 'persod': 'Iniciando a persistência', 'ioclc': 'Emulando o controlador de E/S',
@@ -415,7 +416,7 @@ class Mgu7Runtime(runtime.Runtime):
         runtime.Runtime._kill_children(self)
         if self.shm: shm_unlink(self.shm); self.shm = None
     def status(self):
-        s = runtime.Runtime.status(self); s['kind'] = self.kind; s['disp'] = list(self.disp); s['hmi_exits'] = 0
+        s = runtime.Runtime.status(self); s['kind'] = self.kind; s['disp'] = list(self.disp); s['hmi_exits'] = 0; s['role'] = self.role
         return s
     # ---------- quadro: o glhost7 grava <w, h, seq> (3 inteiros) + RGBA a partir do byte 64 ----------
     def _hdr(self, m): return struct.unpack_from('<iii', m, 0)
@@ -452,6 +453,8 @@ class Mgu7Runtime(runtime.Runtime):
             if self._hdr(m)[2] == seq: break
         return seq, w, h, raw
     def screen_png(self):
+        seq0 = self.frame_seq()
+        if seq0 and self._png[0] == seq0: return self._png[1], seq0          # o celular pede a cada 50 ms: não reconverte um quadro que não mudou
         fr = self.frame_bytes()
         if not fr: return None, 0
         seq, w, h, raw = fr

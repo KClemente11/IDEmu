@@ -16,8 +16,8 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WEB = os.path.join(ROOT, 'idemu', 'web')
 I18N_JS = os.path.join(WEB, 'i18n.js')
-JS_FILES = ['util.js', 'wizard.js', 'tabs.js', 'cluster.js', 'run.js', 'coding.js', 'app.js', 'stats.js']
-PY_FILES = ['server', 'catalog', 'runtime', 'builder', 'gps', 'sshbridge', 'canbus', 'coding', 'codegen', 'swfl', 'ifs', 'guestfs', 'most', 'v850', 'sshshell', 'stats']
+JS_FILES = ['util.js', 'wizard.js', 'tabs.js', 'cluster.js', 'run.js', 'coding.js', 'app.js', 'stats.js', 'envtools.js', 'packages.js', 'onboarding.js']
+PY_FILES = ['server', 'catalog', 'runtime', 'builder', 'gps', 'sshbridge', 'canbus', 'coding', 'codegen', 'swfl', 'ifs', 'guestfs', 'most', 'v850', 'sshshell', 'stats', 'vin', 'sysfiles', 'mgu7', 'mgu', 'cic', 'phone', 'coding7', 'coding8']
 
 DIACRITICS = re.compile(r'[áàâãéêíóôõúüçÁÀÂÃÉÊÍÓÔÕÚÜÇ]')
 PT_WORDS = re.compile(r'(?<![\w.\-/#_])(?:' + '|'.join("""
@@ -33,7 +33,7 @@ UI_EN = re.compile(r'^(?:[A-Z][a-z]+(?:[ ,.:\'?!-]|$)|\d+ [a-z]+ )')
 # Not user-facing, or deliberately untranslated: routes (hash URLs), keyboard keys, HTTP, native language names, product names.
 ALLOW = {
     'ambientes', '#/ambientes', 'novo', 'pt_BR', 'Português (Brasil)', 'Português (Portugal)', 'Español', 'Français', 'Türkçe',
-    'Escape', 'Enter', 'Tab', 'Shift', 'Content-Type', 'x', 'Rolls-Royce', 'Navigation Business', 'Navigation Professional',
+    'Escape', 'Enter', 'Tab', 'Shift', 'Content-Type', 'x', 'Rolls-Royce', 'Navigation Business', 'Navigation Professional', 'EntryNav', '#nav a[data-route="ambientes"]',
 }
 
 

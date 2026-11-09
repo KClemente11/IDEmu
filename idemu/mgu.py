@@ -101,8 +101,12 @@ class MguRuntime(runtime.Runtime):
             self._climate_set = True; self.send_cmd('c 215 215 1')
     def hmi_exits(self):
         """Quantas vezes o HMI caiu nesta execução (o guest o reinicia sozinho)."""
-        try:
-            with open(os.path.join(self.logd, 'console.log'), 'rb') as f: return f.read().count(b'IDEMU-HMI-EXIT')
+        try:                                   # lê só o que o console.log ganhou desde a última consulta (o status é pedido 4 vezes por segundo)
+            p = os.path.join(self.logd, 'console.log'); off, n, tail = getattr(self, '_exits', (0, 0, b''))
+            if os.path.getsize(p) < off: off, n, tail = 0, 0, b''
+            with open(p, 'rb') as f: f.seek(off); d = tail + f.read(); off = f.tell()
+            n += d.count(b'IDEMU-HMI-EXIT'); self._exits = (off, n, d[-15:] if not d.endswith(b'IDEMU-HMI-EXIT') else b'')
+            return n
         except OSError: return 0
     def _mark(self, name): self.marks[name] = round(time.time() - self.t0, 1)
     def _boot_thread(self):
@@ -115,7 +119,7 @@ class MguRuntime(runtime.Runtime):
             _prepare_ram(dtb, tab); self._mark('ram')
             self.step = 'Iniciando o renderizador'; self.pct = 10
             hl = open(os.path.join(self.logd, 'renderer.log'), 'wb')
-            self.gl = subprocess.Popen([OUT + '/guest/mguhost', SHM, str(MB), self.run, angle], stdout=hl, stderr=hl)
+            self._spawn('gl', [OUT + '/guest/mguhost', SHM, str(MB), self.run, angle], stdout=hl, stderr=hl)
             time.sleep(0.5)
             os.mkfifo(self.console_in); self._keep = os.open(self.console_in, os.O_RDWR)
             ser = os.path.join(self.logd, 'console.log'); sl = open(ser, 'wb')
@@ -123,7 +127,7 @@ class MguRuntime(runtime.Runtime):
             cmd = ['qemu-system-aarch64', '-M', 'virt,gic-version=3,memory-backend=m0', '-accel', 'hvf', '-cpu', 'host', '-m', str(MB), '-smp', '4', '-nographic', '-serial', 'mon:stdio',
                    '-object', f'memory-backend-shm,id=m0,size={MB}M', '-dtb', dtb, '-kernel', OUT + '/Image', '-append', args]
             env = dict(os.environ, DYLD_INSERT_LIBRARIES=OUT + '/guest/qemushm.dylib', IDEMU_SHM_NAME=SHM)
-            self.q = subprocess.Popen(cmd, stdin=self._keep, stdout=sl, stderr=subprocess.STDOUT, env=env)
+            self._spawn('q', cmd, stdin=self._keep, stdout=sl, stderr=subprocess.STDOUT, env=env)
             self.step = 'Iniciando o sistema do carro'; self.pct = 15
             time.sleep(2)
             _posixshmem.shm_unlink(SHM)   # QEMU e mguhost já abriram: a memória some junto com eles

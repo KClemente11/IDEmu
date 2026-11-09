@@ -4,12 +4,12 @@ A imagem (IFS de boot com os patches, flash NOR de 128 MB com IFS2 e EFS_RO) é 
 swfl_000003a6 (e do 417) e é compartilhada entre os ambientes. O QEMU (placa `cic`, bin/qemu-system-sh4) grava a tela composta em
 frame.rgb (CIC_FRAME) e recebe rotor/teclas por um socket (CIC_INPUT). Detalhes em docs/IDRIVE4.md.
 """
-import glob, importlib.util, json, os, shutil, socket, subprocess, threading, time
+import collections, glob, importlib.util, json, os, shutil, socket, subprocess, threading, time
 from . import runtime
-from .catalog import CIC_VERSION as VERSION, CIC_PACKAGES as PKGS
+from .catalog import CIC_VERSION as VERSION, CIC_PACKAGES as PKGS, STATE_DIR, WSL
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(ROOT, 'cic')
+OUT = os.path.join(STATE_DIR, 'cic')
 QEMU = os.path.join(ROOT, 'bin', 'qemu-system-sh4')
 DEV_QEMU = os.path.expanduser('~/id4-qemu/build/qemu-system-sh4')     # compilado por src/cic/build.sh
 IMAGES = ('ifs.bin', 'flash.img', 'efs.ifs', 'build.json')
@@ -106,7 +106,7 @@ class CicRuntime(runtime.Runtime):
         if subprocess.call(['cp', '-c', os.path.join(OUT, 'flash.img'), fl], stderr=subprocess.DEVNULL) != 0:
             shutil.copyfile(os.path.join(OUT, 'flash.img'), fl)
         self.state = 'booting'; self.err = None; self.t0 = time.time(); self.marks = {}; self.step = 'Iniciando o QEMU'; self.pct = 2
-        self._fm = None; self._lastseq = None; self.fps_t = []; self.boot_kind = 'cold'; self.stop_ev.clear()
+        self._fm = None; self._lastseq = None; self.fps_t = collections.deque(maxlen=400); self.boot_kind = 'cold'; self.stop_ev.clear()
         threading.Thread(target=self._boot_thread, daemon=True).start()
 
     def _links(self):
@@ -123,10 +123,12 @@ class CicRuntime(runtime.Runtime):
             cmd = _cicrun().qemu_cmd(OUT, run=self.run, qemu=QEMU, debug_log='', flash=os.path.join(self.run, 'flash.img'))
             env = dict(os.environ, CIC_FRAME=self.frame_path, CIC_NORESET='1', CIC_INPUT=os.path.join(self.run, 'input.sock'),
                        CIC_OUTPUT=os.path.join(self.run, 'output.sock'))
+            if WSL:
+                env['LD_LIBRARY_PATH'] = os.pathsep.join(filter(None, (os.path.join(ROOT, 'bin', 'lib'), env.get('LD_LIBRARY_PATH'))))
             self.zbe = VirtualZBE(self.run, self.send_cmd)
             env.pop('CIC_DISPLAY', None)
             out = open(os.path.join(self.run, 'qemu.out'), 'wb')
-            self.q = subprocess.Popen(cmd, stdout=out, stderr=subprocess.STDOUT, env=env)
+            self._spawn('q', cmd, stdout=out, stderr=subprocess.STDOUT, env=env)
             self._links()
             slog = os.path.join(self.run, 'ser0.txt'); seen = set(); end = time.time() + 420
             while not self.stop_ev.is_set():

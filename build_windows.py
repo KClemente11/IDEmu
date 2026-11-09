@@ -23,7 +23,12 @@ def stage_wsl_payload(destination):
 
     bin_dir = destination / 'bin'
     bin_dir.mkdir()
-    for name in ('qemu-system-arm', 'glhost'):
+    names = ['qemu-system-arm', 'glhost']
+    if (ROOT / 'bin' / 'qemu-system-sh4').is_file():
+        names.append('qemu-system-sh4')
+        shutil.copytree(ROOT / 'tools' / 'cic', tools / 'cic',
+                        ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    for name in names:
         executable = ROOT / 'bin' / name
         try:
             with executable.open('rb') as binary:

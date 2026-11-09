@@ -262,7 +262,8 @@ select.input option { background: #2a2a2d; }
 .bmw-bezel { position: relative; margin: 6px 0 16px; border-radius: 18px; overflow: hidden; background: #0b0c0e; box-shadow: 0 14px 34px rgba(0, 0, 0, .55), 0 0 0 1px rgba(255, 255, 255, .06); }
 .bezel-photo { display: block; width: 100%; height: auto; aspect-ratio: 1820 / 640; user-select: none; pointer-events: none; }
 .bezel-hole { position: absolute; left: 15.4%; top: 19.7%; width: 69.3%; height: 72.8%; background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 2px; box-shadow: 0 0 0 2px #000, inset 0 0 18px rgba(0, 0, 0, .9); }
-.bezel-hole .display-wrap { border-radius: 0; height: 100%; width: auto; max-width: 100%; }
+.bezel-hole { container-type: size; }
+.bezel-hole .display-wrap { border-radius: 0; aspect-ratio: var(--ar, 2.6667); height: auto; width: min(100cqw, calc(100cqh * var(--ar, 2.6667))); max-width: 100%; }     /* cabe no vão sem esticar a imagem */
 .bezel-hole .glare { position: absolute; inset: 0; pointer-events: none; background: linear-gradient(112deg, rgba(255, 255, 255, .09) 0%, rgba(255, 255, 255, .025) 30%, rgba(255, 255, 255, 0) 31%), radial-gradient(120% 90% at 12% 0%, rgba(255, 255, 255, .06), transparent 55%); }
 .display-card { overflow: visible; }
 .display-card > .card-title { border-radius: 20px 20px 0 0; }
@@ -290,8 +291,33 @@ select.input option { background: #2a2a2d; }
 
 .bmw-bezel[data-k=id8] .bezel-photo { aspect-ratio: 2000 / 1100; }
 .bmw-bezel[data-k=id8] .bezel-hole { left: 15%; top: 8.2%; width: 76.3%; height: 47.3%; }
+.bmw-bezel[data-k=id7] .bezel-photo { aspect-ratio: 1580 / 680; }
+.bmw-bezel[data-k=id7] .bezel-hole { left: 11.71%; top: 14.56%; width: 76.14%; height: 66.18%; border-radius: 3px; }
 .bmw-bezel[data-k=rse] .bezel-photo { aspect-ratio: 880 / 560; }
 .bmw-bezel[data-k=rse] .bezel-hole { left: 17.5%; top: 19.6%; width: 64.5%; height: 64.3%; }
 .bmw-bezel[data-k=rse] { max-width: 520px; margin-left: auto; margin-right: auto; }
 .bmw-bezel[data-k=cic] .bezel-photo { aspect-ratio: 990 / 335; }
 .bmw-bezel[data-k=cic] .bezel-hole { left: 19.29%; top: 24.48%; width: 61.21%; height: 67.76%; }
+
+/* ---------------------------------------------------------------- VIN, tipo de head unit e arquivos do sistema (envtools.js) */
+.vin-sec h3 { display: flex; align-items: center; gap: 6px; }
+.vin-panel { display: flex; flex-direction: column; gap: 8px; } .vin-panel .vin-in { flex: 1 1 auto; letter-spacing: .08em; font-size: 15px; text-transform: uppercase; }
+.vin-out:empty { display: none; }
+.vin-card { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel2, var(--panel)); }
+.vin-head { display: flex; align-items: center; gap: 12px; } .vin-head > div:nth-child(2) { flex: 1; min-width: 0; } .vin-head b { font-size: 15px; }
+.hu-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; } .hu-opt { align-items: flex-start; } .hu-opt .opt-main span { white-space: normal; }
+.modal.xl { width: min(1100px, calc(100vw - 32px)); }
+.stack { display: flex; flex-direction: column; gap: 12px; }
+.sf { display: flex; flex-direction: column; gap: 10px; min-height: 360px; }
+.sf-empty { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px; padding: 24px 12px; } .sf-empty p { max-width: 620px; margin: 0; }
+.sf-prog { display: flex; flex-direction: column; gap: 8px; padding: 12px 0; }
+.sf-bar { gap: 10px; flex-wrap: wrap; }
+.sf-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; font-size: 13px; } .sf-crumbs .link { display: inline-flex; align-items: center; gap: 4px; }
+.sf-list { max-height: 52vh; overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
+.sf-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) 90px 96px; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); width: 100%; background: none; border-left: 0; border-right: 0; border-top: 0; color: var(--text); text-align: left; font: inherit; }
+button.sf-row { cursor: pointer; } .sf-row:hover { background: var(--hover); } .sf-row:last-child { border-bottom: 0; }
+.sf-n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; } .sf-row.dir .sf-n { font-weight: 600; }
+.sf-act { display: flex; justify-content: flex-end; gap: 2px; } .sf-none { padding: 14px; }
+.sf-preview { max-height: 36vh; overflow: auto; margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--field); border: 1px solid var(--line); font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+.sf-img { max-width: 100%; display: block; margin: 0 auto; background: repeating-conic-gradient(#8883 0 25%, transparent 0 50%) 0 0 / 16px 16px; }
+@media (max-width: 640px) { .sf-row { grid-template-columns: 20px minmax(0, 1fr) 70px; } .sf-act { grid-column: 2 / -1; justify-content: flex-start; } }

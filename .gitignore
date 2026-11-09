@@ -1,6 +1,7 @@
 # ---- Nothing from BMW goes in this repository -------------------------------------------------------------------------
 # Environments are built from your own PSdZData/SWFL files: images, snapshots, saved state, SSH keys (private) and logs.
 /environments/
+/packages/
 # Images and caches built from firmware (iDrive 4, 7 and 8) and the extracted coding dictionaries.
 /cic/
 /mgu7/
@@ -8,6 +9,8 @@
 # Compiled binaries: custom QEMU builds (GPL), glhost renderers and the decompiled shader dump. Rebuild with tools/qemu/build.sh and src/*/build.sh.
 /bin/
 /mapcache/
+# Type-key table read from your PSdZData (VIN decoder) and other local caches
+/cache/
 /vendor/
 # Build outputs in src/: they include libraries copied from the firmware (libc.so.3, libc.so.6, libsocket.so.3...) used only to link the shims.
 /src/*/out/

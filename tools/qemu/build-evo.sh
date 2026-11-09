@@ -18,7 +18,7 @@ mkdir "$build/out"
 cd "$build/out"
 "$source/configure" --target-list=arm-softmmu --disable-download --disable-docs \
     --disable-tools --disable-guest-agent --disable-gtk --disable-sdl --disable-vnc \
-    --disable-werror --enable-fdt=system
+    --disable-werror --disable-slirp --enable-fdt=system
 ninja -j "${QEMU_BUILD_JOBS:-8}" qemu-system-arm
 ./qemu-system-arm -machine help | grep '^omap5-uevm '
 mkdir -p "$root/bin"

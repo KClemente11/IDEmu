@@ -66,6 +66,8 @@ def percentile(sorted_vals, p):
     i = min(len(sorted_vals) - 1, max(0, int(round(p * (len(sorted_vals) - 1)))))
     return sorted_vals[i]
 
+IDLE_S = 20.0           # s sem pedidos de /api/stats até a amostragem (100 Hz + ps/ioreg por segundo) dormir
+
 class Sampler:
     def __init__(self, app, env_dir_fn):
         self.app, self.env_dir = app, env_dir_fn
@@ -75,7 +77,7 @@ class Sampler:
         self.run_key = None; self.last = None
         self.static = {'host_ram_mb': self._host_ram() // (1 << 20), 'cores': os.cpu_count() or 1, 'gpu': None, 'guest_ram_mb': 2048}
         self.storage = {}; self.storage_t = {}
-        self._stop = threading.Event()
+        self._stop = threading.Event(); self.seen = 0.0          # última consulta de /api/stats: sem ninguém olhando, a amostragem para
         threading.Thread(target=self._fast, daemon=True).start()
         threading.Thread(target=self._slow, daemon=True).start()
         threading.Thread(target=lambda: self.static.__setitem__('gpu', gpu_name()), daemon=True).start()
@@ -93,6 +95,7 @@ class Sampler:
     def _fast(self):
         last_seq = None; last_t = None
         while not self._stop.is_set():
+            if time.time() - self.seen > IDLE_S: last_seq = last_t = None; time.sleep(0.5); continue
             rt = self.app.rt
             if rt is not None and rt.state in ('booting', 'running'):
                 try: seq = rt.frame_seq()
@@ -113,6 +116,7 @@ class Sampler:
         prev = {}
         while not self._stop.is_set():
             t0 = time.time()
+            if t0 - self.seen > IDLE_S: prev.clear(); time.sleep(1.0); continue
             try: self._sample(prev)
             except Exception: pass
             time.sleep(max(0.05, INTERVAL - (time.time() - t0)))
@@ -185,6 +189,7 @@ class Sampler:
 
     # ---- API ----
     def snapshot(self, eid, since=0.0):
+        self.seen = time.time()
         rt = self.app.rt
         running = rt is not None and rt.state in ('booting', 'running')
         with self.lock: samples = [s for s in self.hist if s['t'] > since]

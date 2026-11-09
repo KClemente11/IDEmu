@@ -141,7 +141,7 @@
     { id: 'params', title: 'Parâmetros' }, { id: 'review', title: 'Revisar e criar' },
   ];
   const MONTHS = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
-  const NAVI_OPTS = [['keine_navi', 'Sem navegação (keine_navi)'], ['navi_business', 'Navigation Business'], ['navi_professional', 'Navigation Professional']];
+  const NAVI_OPTS = [['ece', 'Europa e resto do mundo (ECE)'], ['us', 'América do Norte (US)'], ['keine_navi', 'Sem navegação']];
   const UNITS = [['metric', 'Métrico (km, °C, L)'], ['imperial', 'Imperial (mi, °F, gal)']];
   const LCI_OPTS = [[0, 'Pré-LCI (facelift anterior)'], [1, 'LCI (facelift)']];
   const MIN_FREE = 1024 * 1024 * 1024;    // o servidor exige 1 GiB livres na pasta escolhida para a VM
@@ -198,8 +198,9 @@
     const pick = (list, pref) => { const l = opts(list, []); return (l.find((x) => x.code === pref) || l[0] || {}).code || pref; };
     W.coding = {
       language: pick(c.languages, IDE.lang() === 'pt' ? 'pt_BR' : 'en_GB'), country: pick(c.countries, IDE.lang() === 'pt' ? 'BR' : 'GB'), units: 'metric', vin: '', year: 2017, month: 7, lci: 1,
-      display: pick(c.displays, '10_25_1440x540'), hmi_version: pick(c.hmi_versions, (genObj() || {}).hmi_version || 'id6_light'), navi: 'keine_navi',
+      display: pick(c.displays, '10_25_1440x540'), hmi_version: pick(c.hmi_versions, (genObj() || {}).hmi_version || 'id6_light'), navi: 'ece', hu_variant: 'professional',
     };
+    if (W.vin && W.vin.env && W.vin.env.coding) Object.assign(W.coding, W.vin.env.coding);         // carro vindo do VIN (etapa 1)
   }
   function vinError(v) {
     if (!v) return IDE.t('Informe o VIN (17 caracteres).');
@@ -248,6 +249,7 @@
       h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Novo ambiente'), h('p', { class: 'sub' }, 'Siga as etapas para montar um carro virtual.'))),
       stepper, body, foot));
     let stopBuildLoop = null, dead = false;
+    let vinEl = null;          // painel do VIN da etapa 1 (um por montagem da tela)
 
     async function loadCat() {
       try { W.cat = await IDE.loadCatalog(true); } catch (e) { toastErr(e); W.cat = W.cat || null; }
@@ -265,7 +267,7 @@
     function renderStepper() {
       IDE.clear(stepper);
       const total = STEPS.length, pct = W.phase === 'done' ? 100 : ((W.step + 1) / total) * 100;
-      IDE.add(stepper, 
+      IDE.add(stepper,
         h('ol', { class: 'stepper' }, STEPS.map((s, i) => {
           const done = i < W.step || W.phase === 'done';
           const li = h('li', { class: (done ? 'done ' : '') + (i === W.step && W.phase !== 'done' ? 'cur' : '') },
@@ -295,7 +297,7 @@
         const direct = STEPS[W.step].id === 'gen' && genObj() && genObj().direct;   // iDrive 8: tudo vem da PSdZData, não há o que escolher
         const next = h('button', { class: 'btn primary lg', type: 'button', disabled: pr.length > 0, onclick: () => (last || direct ? createAndBuild() : go(1)) },
           last || direct ? [ic('wrench', 18), 'Criar e compilar'] : ['Avançar', ic('chevR', 18)]);
-        IDE.add(foot, 
+        IDE.add(foot,
           h('button', { class: 'btn ghost', type: 'button', onclick: () => IDE.go('ambientes') }, 'Cancelar'),
           h('div', { class: 'spacer' }),
           pr.length ? h('div', { class: 'missing' }, ic('alert', 16), h('span', null, IDE.t('Falta: {list}', { list: pr.map((x) => IDE.t(x)).join(', ') }))) : null,
@@ -391,9 +393,29 @@
         levelBlock(g),
         g.supported ? null : h('span', { class: 'gb' }, IDE.badge('Ainda sem imagem', 'muted'))));
       if (!W.space && !W.spaceAsked) { W.spaceAsked = true; loadSpace(); }
-      return h('div', { class: 'step' }, h('h2', null, 'Qual iDrive você quer emular?'),
+      if (!vinEl) vinEl = IDE.vinPanel({ value: W.vin ? W.vin.vin : '', hint: 'Opcional. O IDEmu reconhece o modelo, o ano e a central do carro e preenche as etapas seguintes.', useLabel: 'Usar este carro', onUse: useVin });
+      return h('div', { class: 'step' },
+        h('section', { class: 'vmhome vin-sec' }, h('h3', null, ic('target', 16), ' ', IDE.t('Tem o VIN do seu carro?')), vinEl,
+          W.vin ? h('div', { class: 'note ok' }, ic('check', 16), h('span', null, IDE.t('Usando o carro do VIN {vin}: {car}.', { vin: W.vin.vin, car: [W.vin.chassis, W.vin.model_year].filter(Boolean).join(' ') }))) : null),
+        h('h2', null, 'Qual iDrive você quer emular?'),
         h('p', { class: 'help' }, 'A escolha define quais arquivos do sistema serão pedidos. Você não precisa ter a PSdZData inteira: só os arquivos que aparecerem na etapa 3. O nível de funcionalidade mostra o que já funciona em cada versão.'),
         h('div', { class: 'gen-grid' }, cards), genObj() && genObj().direct === 'mgu7' ? roleBlock() : null, pkgBlock(), homeBlock());
+    }
+
+    function useVin(d) {
+      const g = d.generation, gens = cat().generations || [];
+      if (!gens.some((x) => x.id === g && x.supported)) { toast(IDE.t('O IDEmu ainda não emula o {gen}.', { gen: IDE.genName(g) }), 'error'); return; }
+      W.vin = d; W.gen = g; W.coding = null;
+      const sug = d.env || {};
+      if (g === 'id5' || g === 'id6') {
+        const s = cat().series.find((x) => x.id === sug.series);
+        if (s && s.chassis.some((c) => c.code === sug.chassis)) { W.series = s.id; W.chassis = sug.chassis; W.swfl = {}; }
+        else toast(IDE.t('O chassi {c} não está na sua PSdZData: escolha o modelo na etapa 2.', { c: sug.chassis || '?' }), 'info');
+      }
+      if (!W.nameTouched && sug.name) W.name = sug.name;
+      initCoding();
+      toast(IDE.t('Carro do VIN aplicado: {gen}.', { gen: IDE.genName(g) }), 'success');
+      render();
     }
 
     /* ---------------- etapa 2: modelo ---------------- */
@@ -507,7 +529,12 @@
       const ctry = opts(ct.countries, [{ code: 'BR', name: 'Brasil' }]).map((x) => [x.code, x.name]);
       const disp = opts(ct.displays, [{ code: '10_25_1440x540', name: '10,25" 1440x540' }]).map((x) => [x.code, x.name]);
       const hmiv = opts(ct.hmi_versions, [{ code: 'id6_light', name: 'iDrive 6 (tiles)' }]).map((x) => [x.code, x.name]);
-      const naviList = (ct.navis && ct.navis.length) ? opts(ct.navis, []).map((x) => [x.code, x.name]) : NAVI_OPTS;
+      const naviList = (ct.navi && ct.navi.length) ? opts(ct.navi, []).map((x) => [x.code, x.name]) : NAVI_OPTS;
+      const huPick = IDE.huVariantPicker(() => c.hu_variant || 'professional', (id) => {
+        const v = (ct.hu_variants || []).find((x) => x.id === id); c.hu_variant = id;
+        if (v) { c.display = v.display; if (v.navi && c.navi === 'keine_navi') c.navi = c.country === 'US' ? 'us' : 'ece'; }
+        render();
+      });
       const years = []; for (let y = 2022; y >= 2012; y--) years.push([y, String(y)]);
       const months = MONTHS.map((m, i) => [i + 1, String(i + 1).padStart(2, '0') + ' – ' + IDE.t(m)]);
 
@@ -549,6 +576,8 @@
           h('div', { class: 'grid-2' },
             h('div', { class: 'field' }, h('label', { class: 'lbl' }, 'Nome do ambiente'), nameIn, nameErr),
             h('div', { class: 'field' }, h('label', { class: 'lbl' }, 'VIN (17 caracteres)'), h('div', { class: 'row tight' }, vinIn, genBtn), h('div', { class: 'row between' }, vinErr, vinCount)))),
+        h('fieldset', null, h('legend', null, 'Tipo de head unit'),
+          h('p', { class: 'help' }, 'A PSdZData traz o firmware do NBT Evo; o Business e o EntryNav são reproduzidos pela codificação (display, navegação e toque), como nos carros que saíam com essas unidades.'), huPick),
         h('fieldset', null, h('legend', null, 'Região'),
           h('div', { class: 'grid-3f' },
             h('div', { class: 'field' }, h('label', { class: 'lbl' }, 'Idioma'), sel('language', lang)),
@@ -583,7 +612,8 @@
             row('Idioma', lbl(ct.languages, c.language)), row('País', lbl(ct.countries, c.country)),
             row('Unidades', (UNITS.find((u) => u[0] === c.units) || [0, c.units])[1]),
             row('Produção', String(c.month).padStart(2, '0') + '/' + c.year + ' · ' + (c.lci ? 'LCI' : IDE.t('Pré-LCI'))),
-            row('Display', lbl(ct.displays, c.display)), row('HMI', lbl(ct.hmi_versions, c.hmi_version)), row('Navegação', c.navi))),
+            row('Head unit', ((ct.hu_variants || []).find((v) => v.id === c.hu_variant) || { name: '–' }).name),
+            row('Display', lbl(ct.displays, c.display)), row('HMI', lbl(ct.hmi_versions, c.hmi_version)), row('Navegação', lbl(ct.navi, c.navi)))),
           h('section', { class: 'rv' }, h('h3', null, 'Arquivos SWFL'), h('dl', { class: 'kv one' },
             roleList().map((r) => { const f = W.swfl[r.role]; return row(r.label, f ? f.file + (f.size ? ' · ' + IDE.fmtSize(f.size) : '') : IDE.t('não escolhido'), true); }))),
           h('section', { class: 'rv' }, h('h3', null, 'Rede'), h('dl', { class: 'kv one' },
@@ -592,7 +622,8 @@
 
     /* ---------------- criar + build ---------------- */
     function bodyFromState() {
-      if (genObj() && genObj().direct) return { kind: genObj().direct, home: W.home || '', role: genObj().direct === 'mgu7' ? W.role : undefined, name: W.nameTouched && W.name.trim() ? W.name.trim() : genObj().name + (genObj().direct === 'mgu7' ? (W.role === 'rse' ? ' RSE' : ' CID') : genObj().direct === 'cic' ? ' CIC' : ' G70') };
+      if (genObj() && genObj().direct) return { kind: genObj().direct, home: W.home || '', role: genObj().direct === 'mgu7' ? W.role : undefined,
+        coding: W.vin ? { vin: W.vin.vin } : undefined, model_name: W.vin && W.vin.env ? [W.vin.chassis, W.vin.env.model_name].filter(Boolean).join(' ') : undefined, name: W.nameTouched && W.name.trim() ? W.name.trim() : genObj().name + (genObj().direct === 'mgu7' ? (W.role === 'rse' ? ' RSE' : ' CID') : genObj().direct === 'cic' ? ' CIC' : ' G70') };
       return {
         home: W.home || '', name: W.name.trim(), series: W.series, chassis: W.chassis, brand: brand(),
         swfl: Object.fromEntries(Object.keys(W.swfl).map((k) => [k, W.swfl[k].path])),

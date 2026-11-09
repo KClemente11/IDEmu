@@ -526,11 +526,11 @@ class MostCar(object):
     def _run(self):
         import time
         while not self._stop:
-            a = 0.2            # média móvel (constante de ~5 s)
+            a = 0.05           # média móvel (constante de ~5 s a 4 Hz)
             self.avg_speed += a * (self._sig('vehicle_speed') - self.avg_speed)
             self.avg_cons += a * (self._sig('fuel_consumption') - self.avg_cons)
-            self.publish_all()
-            time.sleep(1.0)
+            self.publish_all()           # só manda o que mudou; o limite de 30 msg/s da ponte continua valendo
+            time.sleep(0.25)             # 4 Hz: velocidade e marcha acompanham o CAN virtual sem o atraso de até 1 s
 
     def publish_all(self):
         """Envia o Status das propriedades assinadas, mas só as que mudaram desde o último envio (o valor inicial vai na própria assinatura)."""

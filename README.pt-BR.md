@@ -62,6 +62,16 @@ Documentação técnica: `docs/` (API.md, ARQUITETURA.md, V850.md, V850_FIRMWARE
 Botão **Coding** no ambiente: 1.333 parâmetros do CAFD lidos do próprio firmware, com grupo e valor de fábrica, mais uma lista "Popular" com nome e descrição. Altere, clique em **Flash to head unit**: o IDEmu faz um backup,
 regrava a codificação, reinicia a head unit e confere que o HMI leu a tabela nova. Há backups (restaurar), exportar/importar e voltar ao padrão de fábrica. Exemplo testado: idioma da head unit para inglês.
 
+## Seu carro pelo VIN, tipo de head unit e arquivos do sistema
+
+* **VIN**: no assistente "Novo ambiente" (etapa 1) ou no botão **VIN** de um ambiente pronto. O código do tipo (caracteres 4–7) é lido da base KIS da sua PSdZData
+  (`kiswb/*/KIS.data`, ~4.800 tipos, guardados em `cache/vin_types.json`) e vira chassi, carroceria, motor, ano-modelo, mercado e a geração do iDrive; o ambiente sai igual ao carro.
+  O VIN não traz a lista de opcionais, então o tipo de head unit é escolhido à parte.
+* **Tipo de head unit (iDrive 5/6)**: Navigation Professional (10,25" 1440×540, toque), Navigation Business (8,8" 1280×480) ou EntryNav (6,5" 800×480, só o controlador).
+  A PSdZData traz só o firmware do HU_NBTEVO: os três usam esse firmware com a codificação de display, navegação e toque de cada unidade.
+* **Arquivos**: o botão **Arquivos** descompacta os pacotes SWFL/HAR (ou a imagem montada do iDrive 8 e do iDrive 4) em arquivos normais, que você navega no app,
+  vê (texto, imagem ou hexadecimal), baixa ou abre no Finder.
+
 ## Estado e limites (resumo honesto)
 
 Verificado de ponta a ponta neste Mac (F30/BMW, SWFL 007_051_002): criar ambiente → compilar a partir dos SWFL (≈ 20 s)

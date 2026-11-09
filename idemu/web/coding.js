@@ -175,7 +175,7 @@
       const m = IDE.modal({ title: t('Flashing'), size: 'md', persistent: true, body: h('div', null, stepsEl, msg), onClose: () => { closeOk = true; } });
       const stop = IDE.loop(async () => {
         const j = await api('/api/env/' + eid + '/coding/flash');
-        if (closeOk) { stop(); return; }
+        if (closeOk || !document.body.contains(m.el)) { stop(); return; }      // diálogo fechado ou tela trocada
         IDE.clear(stepsEl);
         (j.steps || []).forEach((s, i) => stepsEl.appendChild(h('li', { class: i < j.step ? 'done' : (i === j.step && j.state === 'running' ? 'cur' : (j.state === 'error' && i === j.step ? 'err' : '')) }, i < j.step ? ic('check', 15) : (i === j.step && j.state === 'running' ? h('span', { class: 'spinner sm' }) : h('span', { class: 'cod-dot' })), t(s))));
         if (j.state === 'running') return;
@@ -237,7 +237,8 @@
           if (typeof v !== 'number' || v === p.value) { if (v == null) skip++; return; }
           S.pending[name] = v; n++;
         });
-        if (j.language && j.language !== param('language').value) { S.pending.language = j.language; n++; }
+        const lp = param('language');
+        if (j.language && lp && j.language !== lp.value) { S.pending.language = j.language; n++; }
         S.cat = 'pending'; render();
         toast(t('{n} changes imported. Review and flash them.', { n }) + (skip ? ' ' + t('{n} ignored.', { n: skip }) : ''), n ? 'success' : 'info');
       } catch (e) { toast(t('This file is not an IDEmu coding export.'), 'error'); }

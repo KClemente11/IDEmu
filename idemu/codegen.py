@@ -34,6 +34,13 @@ LANG_FEATURE = {
     'zh_CN': 'LANGUAGE_CHINESE_SIMPLIFIED', 'zh_TW': 'LANGUAGE_CHINESE_TRADITIONAL',
 }
 MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'okt', 'nov', 'dez']
+NAVI_BY_COUNTRY = {'US': 'us', 'CA': 'us', 'CN': 'china', 'JP': 'japan', 'KR': 'korea', 'HK': 'hongkong', 'TW': 'taiwan'}
+
+def navi_value(navi, country=None):
+    """Valor de NAVI_VARIANTE. Versões antigas do assistente gravavam 'navi_professional'/'navi_business', que não existem no dicionário: viram a região do país."""
+    if navi in ('navi_professional', 'navi_business', 'navi', True):
+        return NAVI_BY_COUNTRY.get((country or '').upper(), 'ece')
+    return navi or 'keine_navi'
 
 def profile_for(env):
     """Converte env['coding'] + chassi/marca em {VARIAVEL: valor} do dicionário de codificação."""
@@ -51,15 +58,16 @@ def profile_for(env):
     p['CID_DISPLAY_RES'] = res
     p['CID_DISPLAY_SIZE'] = '_'.join(disp.split('_')[:2])
     p['CID_COLOR_DEPTH'] = '24'
-    p['DISPLAY_VARIANTE'] = 'breites_display'
+    p['DISPLAY_VARIANTE'] = 'schmales_display' if disp.startswith('6_5') else 'breites_display'
     p['DISPLAY_SIZE_RESOLUTION'] = disp
     lang = cd.get('language', 'en_GB')
     for code, feat in LANG_FEATURE.items():
         p[feat] = 'master' if code == lang else 'list'
-    p['NAVI_VARIANTE'] = cd.get('navi', 'keine_navi')
+    p['NAVI_VARIANTE'] = navi_value(cd.get('navi', 'keine_navi'), cd.get('country'))
     p['EINHEITEN_MASTER'] = 1
-    p.update({'ZBE_35UP': 0, 'ZBE_TOUCH': 1, 'ZBE_TOUCH_SPELLER': 1, 'ZBE_TOUCH_BROWSER': 1,
-              'ZBE_TOUCH_INTERACTIVE_MAP': 1, 'CID_TOUCH': 0})
+    touch = 0 if cd.get('hu_variant') == 'entrynav' else 1          # EntryNav: só o controlador, sem tela de toque
+    p.update({'ZBE_35UP': 0, 'ZBE_TOUCH': touch, 'ZBE_TOUCH_SPELLER': touch, 'ZBE_TOUCH_BROWSER': touch,
+              'ZBE_TOUCH_INTERACTIVE_MAP': touch, 'CID_TOUCH': 0})
     for k, v in (cd.get('extra') or {}).items():
         p[k] = v
     return p

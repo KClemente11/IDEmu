@@ -1,6 +1,6 @@
 # IDEmu on Windows
 
-The Windows launcher runs the iDrive 5/6 backend in Ubuntu under WSL2. It opens the web interface in the Windows browser. QEMU, Unix sockets and the OpenGL renderer run in WSL. The launcher exposes iDrive 5 and 6 in the setup wizard.
+The Windows launcher runs the iDrive 5/6 backend in Ubuntu under WSL2. It opens the web interface in the Windows browser. QEMU, Unix sockets and the OpenGL renderer run in WSL. The launcher also exposes iDrive 4 (CIC) when the custom Linux `bin/qemu-system-sh4` binary is installed. iDrive 7 and 8 are unavailable on WSL.
 
 ## Build the backend
 
@@ -17,6 +17,8 @@ sh src/glhost/build.sh
 ```
 
 The scripts place both helpers in `bin/`. Rebuild QEMU if you already have an IDEmu ARM binary from before this port. The shim disk now uses a separate physical address from the graphics command buffer.
+
+For iDrive 4, configure QEMU 11.1.2 in a separate build folder with `--target-list=sh4-softmmu --disable-slirp --enable-fdt=system` and the same headless options as above. Run `src/cic/build.sh` with `CIC_QEMU` set to the QEMU source folder and `CIC_BUILD` set to the configured build folder. The Windows packager includes `bin/qemu-system-sh4` if present. System Files can discover the CIC firmware under `CIC/swe/swfl` inside your selected PSdZData folder.
 
 ## Start from Windows
 
@@ -35,6 +37,7 @@ The workspace's `006_017_006` packages have a different QNX startup script. Extr
 The Windows launcher was verified with a cold boot of the `007_051_002` F30 BMW ID6 Light profile. The native Home screen rendered at 1440×540, and rotary and select commands from Windows opened My Vehicle. The environment build creates a shader index from the firmware so the renderer can recognize cursor materials. If an older environment displays a white rectangle over the selected label, rebuild its images and start it again.
 
 If a VM fails to start, check `qemu.log`, `renderer.log`, and `console.log` under the environment's `logs/` folder.
+If QEMU was linked against `libslirp.so.0` in a temporary build directory, that dependency can disappear after a WSL shutdown. Rebuild with the current Evo build script, which disables the unused networking backend, or keep the matching library in `bin/lib/` with that older binary. The launcher reports the QEMU log when the process exits before its monitor opens.
 
 ## Build a Windows executable
 
@@ -57,3 +60,11 @@ To build the native Windows firmware-preparation application:
 ```
 
 `IDEmu-Prep.exe` opens System Files and builds iDrive 5/6 images on Windows. It stores data under `%LOCALAPPDATA%\IDEmu`. Booting the VM from this application requires the Windows QEMU and renderer port. To keep multiple builds, pass `--output-dir` with a new directory.
+
+## Path to a native Windows runtime
+
+Use the native prep app as the Windows entry point. System Files should accept a Windows folder such as `C:\BMW\PSdZData`, validate the exact SWFL versions for the selected head unit, and keep references to the source files. Put generated images, settings and logs under `%LOCALAPPDATA%\IDEmu` by default.
+
+1. Build the patched OMAP5 QEMU machine as a Windows x64 executable. Use loopback endpoints for its monitor and guest serial connections; adapt the custom graphics bridge and controller transport for Windows.
+2. Build a Windows renderer, using a native OpenGL context and Windows frame sharing. Check the reference iDrive 6 profile from cold boot through the first HMI frame, controller input, and clean shutdown before adding iDrive 5.
+3. Ship the native helpers with the app in one installer. On a clean Windows machine with no WSL distro, verify that a user can select firmware in System Files, build an environment, boot it, and close it without installing Python or QEMU. Keep additional generations gated until their native backends pass the same checks.
