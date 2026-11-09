@@ -120,11 +120,14 @@ class V850Link(object):
     def _connect(self):
         t_end = time.time() + 120
         while self.alive and time.time() < t_end:
+            s = socket.socket(socket.AF_INET if isinstance(self.uart_sock, tuple) else socket.AF_UNIX)
             try:
-                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                if isinstance(self.uart_sock, tuple):
+                    s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 s.connect(self.uart_sock)
                 return s
-            except Exception:
+            except OSError:
+                s.close()
                 time.sleep(0.5)
         return None
 

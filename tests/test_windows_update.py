@@ -11,7 +11,7 @@ from idemu import windows_update as updater
 
 
 class WindowsUpdateTest(unittest.TestCase):
-    def check(self, release, payload, choice=6):
+    def check(self, release, payload, choice=6, asset_name=updater.ASSET):
         with tempfile.TemporaryDirectory() as folder:
             launcher = Path(folder) / 'IDEmu.exe'
             launcher.with_name('installed-version.txt').write_text('0.1.9\n', encoding='ascii')
@@ -25,19 +25,26 @@ class WindowsUpdateTest(unittest.TestCase):
                   patch.object(updater, 'open_url', side_effect=[io.BytesIO(json.dumps(release).encode()), io.BytesIO(payload)]) as fetch,
                   patch.object(updater, 'dialog', return_value=choice) as dialog,
                   patch.object(updater, 'start_setup', side_effect=setup)):
-                code = updater.main()
+                code = updater.main(asset_name)
                 return code, fetch.call_count, launched, dialog.call_args.args[0]
 
-    def release(self, payload, tag='v0.1.10'):
+    def release(self, payload, tag='v0.1.10', asset_name=updater.ASSET):
         return {'tag_name': tag, 'assets': [{
-            'name': updater.ASSET, 'state': 'uploaded', 'size': len(payload),
-            'browser_download_url': f'https://github.com/{updater.REPO}/releases/download/{tag}/{updater.ASSET}',
+            'name': asset_name, 'state': 'uploaded', 'size': len(payload),
+            'browser_download_url': f'https://github.com/{updater.REPO}/releases/download/{tag}/{asset_name}',
             'digest': 'sha256:' + hashlib.sha256(payload).hexdigest(),
         }]}
 
     def test_newer_verified_payload_is_handed_off(self):
         payload = b'test installer'
         self.assertEqual(self.check(self.release(payload), payload)[:3], (0, 2, [payload]))
+
+    def test_native_installation_selects_only_the_native_asset(self):
+        payload = b'native installer'
+        release = self.release(b'wsl installer')
+        self.assertEqual(self.check(release, payload, asset_name=updater.NATIVE_ASSET)[:3], (1, 1, []))
+        release['assets'] += self.release(payload, asset_name=updater.NATIVE_ASSET)['assets']
+        self.assertEqual(self.check(release, payload, asset_name=updater.NATIVE_ASSET)[:3], (0, 2, [payload]))
 
     def test_cancel_and_older_release_do_not_download(self):
         payload = b'test installer'

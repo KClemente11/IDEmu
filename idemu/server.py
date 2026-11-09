@@ -36,6 +36,14 @@ def require_system_files(env):
 def runtime_module(kind):
     return import_module('.' + catalog.DIRECT_BACKENDS.get(kind, 'runtime'), __package__)
 
+def runtime_available(env):
+    if not catalog.backend_supported(env.get('kind')):
+        return False
+    if sys.platform != 'win32':
+        return True
+    version = (env.get('coding') or {}).get('hmi_version') or 'id6_light'
+    return version.startswith('id6') and catalog.native_evo_ready()
+
 def fs_space(path):
     """Espaço livre e permissões de uma pasta (GET /api/fs/space), usado ao escolher onde a VM fica."""
     p = os.path.abspath(os.path.expanduser(path or '~'))
@@ -60,14 +68,16 @@ class App:
     def load_env(self, eid):
         env = self.read_env(eid)
         env['files_ok'] = files_ok(env)
-        env['runtime_available'] = sys.platform != 'win32' and catalog.backend_supported(env.get('kind'))
+        env['runtime_available'] = runtime_available(env)
         env['build'] = self.build_info(eid, env)
         env['fast_boot'] = env.get('fast_boot', True)
         env['snapshot'] = self.snapshot_info(eid, env)
         return env
     def snapshot_info(self, eid, env):
         kind = env.get('kind')
-        if env['build']['state'] != 'ready' or kind in ('mgu22', 'cic') or sys.platform == 'win32':
+        if sys.platform == 'win32':
+            return {'valid': False, 'size': 0, 'enabled': False, 'supported': False}
+        if env['build']['state'] != 'ready' or kind in ('mgu22', 'cic'):
             return {'valid': False, 'size': 0, 'enabled': env['fast_boot'] and kind in (None, 'mgu7')}
         e = dict(env); e.pop('build', None); e.pop('snapshot', None)
         try: return getattr(runtime_module(kind), RUNTIME_TYPES[kind])(self.env_dir(eid), e).snapshot_info()
@@ -269,7 +279,8 @@ class App:
         if self.rt and self.rt.state in ('booting', 'running'): raise ApiError('já existe um ambiente em execução; pare-o primeiro')
         env = self.read_env(eid)
         require_system_files(env)
-        if sys.platform == 'win32': raise ApiError('Use the WSL launcher to run the head unit on Windows.', 409)
+        if not runtime_available(env):
+            raise ApiError('The native Windows runtime currently boots iDrive 6 only and requires the Windows QEMU and renderer.', 409)
         if self.build_info(eid, env)['state'] != 'ready': raise ApiError('compile o ambiente antes de iniciar')
         if not during_flash and (self.flashes.get(eid) or {}).get('state') == 'running': raise ApiError('aguarde a gravação da codificação terminar')
         if self.rt and self.rt.state != 'stopped':          # o anterior parou com erro: encerra o que tiver sobrado dele (QEMU, renderizador, portas CAN/GPS)

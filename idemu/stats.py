@@ -179,7 +179,8 @@ class Sampler:
             p = os.path.join(d, n)
             other += dir_size(p) if os.path.isdir(p) else os.path.getsize(p)
         if other: parts.append({'id': 'other', 'label': 'Outros', 'bytes': other}); total += other
-        run = os.path.join('/tmp/idemu-%d' % os.getuid(), eid)
+        from .catalog import runtime_root
+        run = os.path.join(runtime_root(), eid)
         rb = dir_size(run) if os.path.isdir(run) else 0
         if rb: parts.append({'id': 'run', 'label': 'Temporários da execução', 'bytes': rb}); total += rb
         du = shutil.disk_usage(d)

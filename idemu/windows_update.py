@@ -18,6 +18,7 @@ import urllib.request
 
 REPO = 'KClemente11/IDEmu'
 ASSET = 'IDEmu-Setup.exe'
+NATIVE_ASSET = 'IDEmu-Native-Setup.exe'
 LATEST = f'https://api.github.com/repos/{REPO}/releases/latest'
 VERSION_RE = re.compile(r'(?:0|[1-9][0-9]{0,4})(?:\.(?:0|[1-9][0-9]{0,4})){2}', re.ASCII)
 MAX_INSTALLER_BYTES = 512 * 1024 * 1024
@@ -44,7 +45,7 @@ def open_url(url, accept):
     return urllib.request.build_opener(HttpsRedirects()).open(request, timeout=25)
 
 
-def update_asset(release, installed):
+def update_asset(release, installed, asset_name=ASSET):
     """Find the exact published installer and its GitHub-computed SHA-256."""
     if release.get('draft') or release.get('prerelease'):
         return None
@@ -54,9 +55,9 @@ def update_asset(release, installed):
     version = tag[1:]
     if version_tuple(version) <= version_tuple(installed):
         return None
-    expected_url = f'https://github.com/{REPO}/releases/download/{tag}/{ASSET}'
+    expected_url = f'https://github.com/{REPO}/releases/download/{tag}/{asset_name}'
     for asset in release.get('assets', []):
-        if asset.get('name') != ASSET or asset.get('state') != 'uploaded':
+        if asset.get('name') != asset_name or asset.get('state') != 'uploaded':
             continue
         size = asset.get('size')
         digest = asset.get('digest')
@@ -65,7 +66,7 @@ def update_asset(release, installed):
                 not re.fullmatch(r'sha256:[a-f0-9]{64}', digest)):
             raise ValueError('The release installer lacks valid download or checksum metadata.')
         return version, expected_url, size, digest[7:]
-    raise ValueError(f'Release {tag} does not publish {ASSET} yet.')
+    raise ValueError(f'Release {tag} does not publish {asset_name} yet.')
 
 
 def download_installer(url, size, digest, destination):
@@ -107,12 +108,12 @@ try {
                      creationflags=subprocess.CREATE_NO_WINDOW)
 
 
-def main():
+def main(asset_name=ASSET):
     """Run independently of the GUI server; only install after the user agrees."""
     try:
         version_file = Path(sys.executable).with_name('installed-version.txt')
         if not version_file.is_file():
-            raise ValueError('Install IDEmu using IDEmu-Setup.exe to use the updater.')
+            raise ValueError(f'Install IDEmu using {asset_name} to use the updater.')
         installed = version_file.read_text(encoding='ascii').strip()
         version_tuple(installed)
         try:
@@ -120,7 +121,7 @@ def main():
                 raw = response.read(2 * 1024 * 1024 + 1)
                 if len(raw) > 2 * 1024 * 1024:
                     raise ValueError('GitHub returned too much release metadata.')
-                asset = update_asset(json.loads(raw), installed)
+                asset = update_asset(json.loads(raw), installed, asset_name)
         except urllib.error.HTTPError as error:
             if error.code != 404:
                 raise
@@ -137,7 +138,7 @@ def main():
         print(f'Downloading and verifying IDEmu {version}…', flush=True)
         tmp = tempfile.mkdtemp(prefix='idemu-update-')
         try:
-            setup = Path(tmp) / ASSET
+            setup = Path(tmp) / asset_name
             download_installer(url, size, digest, setup)
             start_setup(setup)
         except Exception:

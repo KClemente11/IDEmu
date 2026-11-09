@@ -14,6 +14,31 @@ unsigned char *pngload(const char *path,int *w,int *h){
   CGContextRef c=px?CGBitmapContextCreate(px,W,H,8,(size_t)W*4,cs,kCGImageAlphaPremultipliedLast):0;
   if(c){ CGContextDrawImage(c,CGRectMake(0,0,W,H),img); CGContextRelease(c); } else { free(px); px=0; }
   CGColorSpaceRelease(cs); CGImageRelease(img); *w=W; *h=H; return px; }
+#elif defined(_WIN32)
+#include <png.h>
+#include <stdlib.h>
+
+unsigned char *pngload(const char *path, int *w, int *h)
+{
+  png_image image = {0};
+  image.version = PNG_IMAGE_VERSION;
+  if (!png_image_begin_read_from_file(&image, path)) return NULL;
+  image.format = PNG_FORMAT_RGBA;
+  size_t size = PNG_IMAGE_SIZE(image);
+  unsigned char *pixels = malloc(size);
+  if (!pixels || !png_image_finish_read(&image, NULL, pixels, 0, NULL)) {
+    free(pixels);
+    pixels = NULL;
+  } else {
+    *w = image.width;
+    *h = image.height;
+    for (size_t i = 0; i < size; i += 4) {
+      for (int c = 0; c < 3; c++) pixels[i+c] = (pixels[i+c] * pixels[i+3] + 127) / 255;
+    }
+  }
+  png_image_free(&image);
+  return pixels;
+}
 #else
 #include <gdk-pixbuf/gdk-pixbuf.h>
 #include <stdlib.h>

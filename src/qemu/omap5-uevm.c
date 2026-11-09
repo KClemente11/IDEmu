@@ -18,8 +18,7 @@
 #include "qemu/units.h"
 #include "qom/object.h"
 #include "target/arm/cpu-qom.h"
-#include <sys/socket.h>
-#include <sys/un.h>
+#include "qemu/sockets.h"
 
 #define TYPE_OMAP5_UEVM MACHINE_TYPE_NAME("omap5-uevm")
 
@@ -116,7 +115,7 @@ static const MemoryRegionOps omap5_regs_ops = {
     .valid.max_access_size = 4,
 };
 
-/* ---- GL bridge: guest GLES stub <-> host renderer over a unix socket ---- */
+/* ---- GL bridge: guest GLES stub <-> host renderer ---- */
 #define GLB_REGS   0x7ff00000ULL
 #define GLB_BUF    0x7e000000ULL
 #define GLB_BUFSZ  0x01000000
@@ -144,18 +143,20 @@ static int glb_rw(int fd, void *b, size_t n, bool wr)
 
 static int glb_connect(void)
 {
+    const char *port = getenv("OMAP5_GL_PORT");
+    if (port) {
+        InetSocketAddress addr = {
+            .host = "127.0.0.1",
+            .port = (char *)port,
+        };
+        int fd = inet_connect_saddr(&addr, NULL);
+        if (fd >= 0) {
+            socket_set_nodelay(fd);
+        }
+        return fd;
+    }
     const char *path = getenv("OMAP5_GLSOCK");
-    struct sockaddr_un sa = { .sun_family = AF_UNIX };
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) {
-        return -1;
-    }
-    snprintf(sa.sun_path, sizeof(sa.sun_path), "%s", path ? path : "/tmp/glbridge.sock");
-    if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
-        close(fd);
-        return -1;
-    }
-    return fd;
+    return unix_connect(path ? path : "/tmp/glbridge.sock", NULL);
 }
 
 static void glb_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
@@ -175,7 +176,11 @@ static void glb_write(void *opaque, hwaddr off, uint64_t val, unsigned size)
     if (glb_rw(g->fd, &len, 4, true) || glb_rw(g->fd, g->ptr, len, true) ||
         glb_rw(g->fd, &rl, 4, false) || rl > GLB_HALF ||
         glb_rw(g->fd, g->ptr + GLB_HALF, rl, false)) {
+#ifdef _WIN32
+        closesocket(g->fd);
+#else
         close(g->fd);
+#endif
         g->fd = -1;
         return;
     }

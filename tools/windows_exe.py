@@ -31,8 +31,9 @@ def run_wsl(root, argv):
 
 def main():
     if sys.argv[1:] == ['--check-update']:
-        from idemu.windows_update import main as update
-        return update()
+        from idemu.windows_update import ASSET, NATIVE_ASSET, main as update
+        native = (Path(__file__).resolve().parent / 'bin' / 'windows' / 'glhost.exe').is_file()
+        return update(NATIVE_ASSET if native else ASSET)
     kernel = ctypes.WinDLL('kernel32', use_last_error=True)
     kernel.CreateMutexW.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR)
     kernel.CreateMutexW.restype = wintypes.HANDLE

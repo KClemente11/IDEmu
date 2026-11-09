@@ -44,8 +44,8 @@ def stage_wsl_payload(destination):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--backend', choices=('wsl', 'native-prep'), default='wsl',
-                        help='package the working WSL2 runtime, or the native firmware setup and builder')
+    parser.add_argument('--backend', choices=('wsl', 'native-prep', 'native'), default='wsl',
+                        help='package the WSL2 runtime, the native firmware builder, or the native iDrive 6 runtime')
     parser.add_argument('--output-dir', type=Path, default=ROOT / 'dist')
     args = parser.parse_args()
     if sys.platform != 'win32' or platform.machine().upper() not in ('AMD64', 'X86_64'):
@@ -53,7 +53,7 @@ def main():
     if importlib.util.find_spec('PyInstaller') is None:
         parser.error(f'Install the build dependency with "{sys.executable}" -m pip install pyinstaller==6.22.3')
 
-    name = 'IDEmu' if args.backend == 'wsl' else 'IDEmu-Prep'
+    name = 'IDEmu-Prep' if args.backend == 'native-prep' else 'IDEmu'
     output_dir = args.output_dir.resolve()
     target = output_dir / name
     if target.exists() or target.is_symlink():
@@ -80,6 +80,19 @@ def main():
                 command += ['--add-data', f'{assets}:idemu/{folder}']
             template = ROOT / 'idemu' / 'qnxfs' / 'q6_template.img.z'
             command += ['--add-data', f'{template}:idemu/qnxfs']
+            if args.backend == 'native':
+                command += ['--hidden-import', 'idemu.runtime']
+                native = ROOT / 'bin' / 'windows'
+                for name_required in ('qemu-system-arm.exe', 'glhost.exe'):
+                    exe = native / name_required
+                    if not exe.is_file():
+                        parser.error(f'Missing {exe}. Build the native helpers first.')
+                    with exe.open('rb') as source:
+                        if source.read(2) != b'MZ':
+                            parser.error(f'{exe} is not a Windows executable.')
+                for file in sorted(native.iterdir()):
+                    if file.name in ('qemu-system-arm.exe', 'glhost.exe') or file.suffix.lower() == '.dll':
+                        command += ['--add-data', f'{file}:bin/windows']
         command.append(str(ROOT / 'tools' / 'windows_exe.py'))
         subprocess.run(command, cwd=ROOT, check=True)
         bundle = work / 'dist' / name

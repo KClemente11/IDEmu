@@ -15,7 +15,7 @@ RETRY_S = 60.0
 
 
 class MapService:
-    def __init__(self, ctl, gps, settings=None):
+    def __init__(self, ctl, gps, settings=None, *, input_endpoint=None):
         self.ctl, self.gps = ctl, gps
         s = settings or {}
         self.source = s.get('map_source', 'off')
@@ -28,7 +28,9 @@ class MapService:
         self._q = queue.LifoQueue(256)
         self._pend, self._failed = set(), {}
         self._lock = threading.Lock()
-        self._out = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.input_endpoint = input_endpoint or os.path.join(ctl, 'input.sock')
+        self._family = socket.AF_INET if isinstance(self.input_endpoint, tuple) else socket.AF_UNIX
+        self._out = socket.socket(self._family, socket.SOCK_DGRAM)
         self._in = None
         self._last_pos = None
 
@@ -36,7 +38,7 @@ class MapService:
     def _send(self, line):
         for _ in range(5):
             try:
-                self._out.sendto(line.encode(), os.path.join(self.ctl, 'input.sock'))
+                self._out.sendto(line.encode(), self.input_endpoint)
                 return
             except BlockingIOError:
                 time.sleep(0.02)
@@ -183,13 +185,19 @@ class MapService:
 
     def start(self):
         os.makedirs(CACHE, exist_ok=True)
-        path = os.path.join(self.ctl, 'map.sock')
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
-        self._in = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        if self._family == socket.AF_INET:
+            path = ('127.0.0.1', 0)
+        else:
+            path = os.path.join(self.ctl, 'map.sock')
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        self._in = socket.socket(self._family, socket.SOCK_DGRAM)
         self._in.bind(path)
+        if self._family == socket.AF_INET:
+            with open(os.path.join(self.ctl, 'map.port'), 'w', encoding='ascii') as f:
+                print(self._in.getsockname()[1], file=f)
         self._in.settimeout(0.5)
         for fn, name in ((self._listener, 'map-req'), (self._position_loop, 'map-pos'), (self._worker, 'map-net1'), (self._worker, 'map-net2')):
             threading.Thread(target=fn, daemon=True, name=name).start()
@@ -201,6 +209,7 @@ class MapService:
             self._in and self._in.close()
         except OSError:
             pass
+        self._out.close()
 
 
 # ---- zoom do HMI (FBlock MapControl 0xDA): valores que aparecem na escala da tela. id | unidade | metros

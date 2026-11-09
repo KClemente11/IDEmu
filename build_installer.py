@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 
-from idemu.windows_update import ASSET, version_tuple
+from idemu.windows_update import ASSET, NATIVE_ASSET, version_tuple
 
 ROOT = Path(__file__).resolve().parent
 
@@ -30,6 +30,7 @@ def main():
     parser.add_argument('--version', required=True, help='installer version, without the leading v')
     parser.add_argument('--output-dir', type=Path, default=ROOT / 'dist' / 'installer')
     parser.add_argument('--iscc', type=Path, help='path to the Inno Setup command-line compiler')
+    parser.add_argument('--backend', choices=('wsl', 'native'), default='wsl')
     args = parser.parse_args()
     if sys.platform != 'win32':
         parser.error('Build the installer on Windows.')
@@ -41,22 +42,25 @@ def main():
     if not iscc or not iscc.is_file():
         parser.error('Install Inno Setup and set IDEMU_ISCC or pass --iscc.')
     output = args.output_dir.resolve()
-    if (output / ASSET).exists():
+    asset = NATIVE_ASSET if args.backend == 'native' else ASSET
+    if (output / asset).exists():
         parser.error('The destination already contains an installer. Choose a new --output-dir.')
     with tempfile.TemporaryDirectory(prefix='idemu-installer-') as temp:
         work = Path(temp)
         payload = work / 'apps'
-        for backend in ('wsl', 'native-prep'):
+        backends = ('native',) if args.backend == 'native' else ('wsl', 'native-prep')
+        for backend in backends:
             subprocess.run([sys.executable, str(ROOT / 'build_windows.py'), '--backend', backend,
                             '--output-dir', str(payload)], cwd=ROOT, check=True)
         (payload / 'installed-version.txt').write_text(args.version + '\n', encoding='ascii')
-        subprocess.run([str(iscc), '/Qp', f'/DAppVersion={args.version}',
+        edition = ['/DNativeEdition=1'] if args.backend == 'native' else []
+        subprocess.run([str(iscc), '/Qp', *edition, f'/DAppVersion={args.version}',
                         f'/DPayloadDir={payload}', f'/DOutputDir={work}',
                         str(ROOT / 'installer' / 'windows.iss')], cwd=ROOT, check=True)
         output.mkdir(parents=True, exist_ok=True)
-        with (work / ASSET).open('rb') as source, (output / ASSET).open('xb') as dest:
+        with (work / asset).open('rb') as source, (output / asset).open('xb') as dest:
             shutil.copyfileobj(source, dest)
-    print(f'Built {output / ASSET}')
+    print(f'Built {output / asset}')
 
 
 if __name__ == '__main__':

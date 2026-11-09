@@ -6,6 +6,16 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATE_DIR = os.path.abspath(os.environ.get('IDEMU_STATE_DIR') or ROOT_DIR)
 SETTINGS = os.path.join(STATE_DIR, 'settings.json')
 WSL = bool(os.environ.get('IDEMU_WSL'))
+NATIVE_BIN = os.path.join(ROOT_DIR, 'bin', 'windows')
+
+def native_evo_ready():
+    return sys.platform == 'win32' and all(
+        os.path.isfile(os.path.join(NATIVE_BIN, name))
+        for name in ('qemu-system-arm.exe', 'glhost.exe')
+    )
+
+def runtime_root():
+    return os.path.join(STATE_DIR, 'run') if sys.platform == 'win32' else '/tmp/idemu-%d' % os.getuid()
 
 def load_settings():
     paths = [SETTINGS]
@@ -153,6 +163,8 @@ def backend_supported(kind):
 
 for _g in GENERATIONS:
     _g['supported'] = backend_supported(_g.get('direct'))
+    if _g['id'] == 'id5' and native_evo_ready():
+        _g['supported'] = False
 
 def scan_folder(root, wanted, max_depth=7, max_seconds=25):
     # Procura em root arquivos swfl_<id>.bin.<versão> (ids em wanted): raiz do psdzdata, pasta swe/swfl ou qualquer pasta que os contenha.

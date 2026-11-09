@@ -12,7 +12,10 @@ static msurf_t m_lay; static int m_lv,m_lx,m_ly,m_lw,m_lh; static GLuint c_tex,c
 typedef struct { int z,x,y,state; GLuint tex; unsigned last; } mtile_t;   /* state: 0 novo, 1 carregado, 2 pedido ao serviço */
 #define NTILES 192
 static mtile_t mt[NTILES]; static unsigned mclock;
-#ifdef __APPLE__
+#ifdef _WIN32
+static HGLRC mapctx, mainctx;
+static HDC map_dc;
+#elif defined(__APPLE__)
 static CGLContextObj mapctx,mainctx;
 #else
 static Display *map_display;
@@ -21,12 +24,42 @@ static GLXPbuffer map_buffer;
 static GLXDrawable main_draw, main_read;
 #endif
 static double m_lat=-23.5505,m_lon=-46.6333,m_tlat=-23.5505,m_tlon=-46.6333,m_hdg,m_thdg; static float m_zoom=16; static int m_headup,m_night,m_dirty=1,m_pattern; static double m_last; static char m_attr[96];
-static int m_sock=-1; static struct sockaddr_un m_sa; static GLuint m_prog; static int m_havepos;
+static socket_handle m_sock=BAD_SOCKET;
+#ifdef _WIN32
+static struct sockaddr_in m_sa;
+#else
+static struct sockaddr_un m_sa;
+#endif
+static GLuint m_prog; static int m_havepos;
 static const char *m_cache(void){ const char*c=getenv("GLHOST_MAPCACHE"); return c?c:P("mapcache"); }
 static void map_notify(u32 surf){ if(!replaying) input_ev(30,surf,0,0); }
 
-static void map_request(int z,int x,int y){ if(replaying) return; if(m_sock<0){ m_sock=socket(AF_UNIX,SOCK_DGRAM,0); m_sa.sun_family=AF_UNIX; snprintf(m_sa.sun_path,sizeof m_sa.sun_path,"%s",P("map.sock")); }
-  char b[64]; int n=snprintf(b,sizeof b,"%d %d %d",z,x,y); sendto(m_sock,b,n,MSG_DONTWAIT,(struct sockaddr*)&m_sa,sizeof m_sa); }
+static void map_request(int z,int x,int y){
+  if(replaying) return;
+  if(m_sock==BAD_SOCKET){
+#ifdef _WIN32
+    unsigned port;
+    FILE *f=fopen(P("map.port"),"r");
+    if(!f) return;
+    int found=fscanf(f,"%u",&port);
+    fclose(f);
+    if(found!=1 || port<1 || port>65535) return;
+    m_sock=socket(AF_INET,SOCK_DGRAM,0);
+    m_sa.sin_family=AF_INET;
+    m_sa.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
+    m_sa.sin_port=htons((unsigned short)port);
+#else
+    m_sock=socket(AF_UNIX,SOCK_DGRAM,0);
+    m_sa.sun_family=AF_UNIX;
+    snprintf(m_sa.sun_path,sizeof m_sa.sun_path,"%s",P("map.sock"));
+#endif
+  }
+  if(m_sock!=BAD_SOCKET){
+    char b[64];
+    int n=snprintf(b,sizeof b,"%d %d %d",z,x,y);
+    sendto(m_sock,b,n,READ_FLAGS,(struct sockaddr*)&m_sa,sizeof m_sa);
+  }
+}
 static mtile_t *tile_slot(int z,int x,int y){ mtile_t *free_=0,*old=0; for(int i=0;i<NTILES;i++){ mtile_t*t=&mt[i]; if(t->z==z&&t->x==x&&t->y==y&&(t->tex||t->state)) return t; if(!t->tex&&!t->state){ if(!free_) free_=t; } else if(!old||t->last<old->last) old=t; }
   mtile_t *t=free_?free_:old; if(t->tex){ glDeleteTextures(1,&t->tex); t->tex=0; } t->z=z;t->x=x;t->y=y;t->state=0; return t; }
 /* devolve o bloco se estiver carregado; carrega do disco ou pede ao serviço (load=1) */
@@ -65,7 +98,26 @@ static void map_draw_surface(msurf_t *m){
   glBegin(GL_TRIANGLE_FAN); glColor4f(.05f,.35f,.85f,1); glVertex2f(0,2*k); glVertex2f(0,-17*k); glVertex2f(11*k,13*k); glVertex2f(0,6*k); glVertex2f(-11*k,13*k); glVertex2f(0,-17*k); glEnd(); glPopMatrix();
   if(m_attr[0]&&m==&m_lay){ int tw=0; for(const char*p=m_attr;*p;p++) tw+=glutBitmapWidth(GLUT_BITMAP_HELVETICA_10,*p); glColor4f(1,1,1,.7f); glRectf(w-tw-8,h-15,w,h); glColor4f(.1f,.1f,.1f,1); map_text(w-tw-4,h-4,m_attr,GLUT_BITMAP_HELVETICA_10); }
   glDisable(GL_BLEND); }
-#ifdef __APPLE__
+#ifdef _WIN32
+static void map_ctx_begin(void){
+  mainctx=wglGetCurrentContext();
+  map_dc=wglGetCurrentDC();
+  if(!mapctx){
+    mapctx=wglCreateContext(map_dc);
+    if(!mapctx) return;
+    if(!wglShareLists(mainctx,mapctx)){
+      wglDeleteContext(mapctx); mapctx=NULL; return;
+    }
+  }
+  glFlush();
+  if(!wglMakeCurrent(map_dc,mapctx)){
+    wglDeleteContext(mapctx); mapctx=NULL;
+  }
+}
+static void map_ctx_end(void){
+  if(mapctx){ glFlush(); wglMakeCurrent(map_dc,mainctx); }
+}
+#elif defined(__APPLE__)
 static void map_ctx_begin(void){ mainctx=CGLGetCurrentContext(); if(!mapctx){ CGLError e=CGLCreateContext(CGLGetPixelFormat(mainctx),mainctx,&mapctx); if(e){ fprintf(stderr,"[map] CGLCreateContext: %d\n",e); mapctx=0; return; } } glFlush(); CGLSetCurrentContext(mapctx); }
 static void map_ctx_end(void){ if(mapctx){ glFlush(); CGLSetCurrentContext(mainctx); } }
 #else

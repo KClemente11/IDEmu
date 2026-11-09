@@ -50,6 +50,18 @@ jobs:
         with:
           name: wsl-runtime
           path: bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: qemu-upstream-source
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: git diffutils
+          pacboy: gcc:p python:p python-pip:p python-setuptools:p python-wheel:p pkgconf:p ninja:p glib2:p pixman:p dtc:p freeglut:p glew:p libpng:p
+      - name: Build native Windows helpers
+        shell: msys2 {0}
+        run: bash tools/qemu/build-windows-native.sh qemu-11.1.2.tar.xz /tmp/idemu-qemu-win64
       - name: Build setup
         env:
           DISPATCH_VERSION: ${{ inputs.version }}
@@ -66,11 +78,15 @@ jobs:
           python -m pip install pyinstaller==6.22.3
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python build_installer.py --version $version --iscc (Join-Path $compiler 'ISCC.exe')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python build_installer.py --backend native --version $version --iscc (Join-Path $compiler 'ISCC.exe')
           exit $LASTEXITCODE
       - uses: actions/upload-artifact@v4
         with:
           name: windows-installer
-          path: dist/installer/IDEmu-Setup.exe
+          path: |
+            dist/installer/IDEmu-Setup.exe
+            dist/installer/IDEmu-Native-Setup.exe
           if-no-files-found: error
 
   release:
@@ -90,6 +106,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" IDEmu-Setup.exe qemu-11.1.2.tar.xz \
+          gh release create "$GITHUB_REF_NAME" IDEmu-Setup.exe IDEmu-Native-Setup.exe qemu-11.1.2.tar.xz \
             --repo "$GITHUB_REPOSITORY" --verify-tag --latest \
-            --notes 'Windows setup includes the WSL2 emulator and the native firmware prep tool. The QEMU source archive is provided alongside the build scripts and patches at this tag.'
+            --notes 'Choose the native Windows iDrive 6 installer or the WSL2 edition. The QEMU source archive is provided alongside the build scripts and patches at this tag.'

@@ -17,16 +17,26 @@ CPU = 'cortex-a15,cntfrq=6144000,has_el3=off,has_el2=off'
 # bits forçados na leitura do banco de registradores da placa: 0x4a008f00 e 0x4a004400 = CLKACTIVITY (a inicialização esperava 12 milhões de voltas, ~9,5 s, por cada um)
 SETBITS = '0x4a096804=2,0x4809a130=0x26,0x4a008f00=0x100,0x4a004400=0x100'
 
-def _unix_connect(path, timeout=30, check=None):
+def _connect(endpoint, timeout=30, check=None):
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         if check: check()
-        s = socket.socket(socket.AF_UNIX)
+        s = socket.socket(socket.AF_INET if isinstance(endpoint, tuple) else socket.AF_UNIX)
         try:
-            s.connect(path); return s
+            if isinstance(endpoint, tuple):
+                s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            s.connect(endpoint); return s
         except OSError:
             s.close(); time.sleep(0.2)
-    raise RuntimeError('não conectou em ' + path)
+    raise RuntimeError(f'Could not connect to {endpoint}')
+
+def _loopback_endpoints(count):
+    from contextlib import ExitStack
+    with ExitStack() as stack:
+        sockets = [stack.enter_context(socket.socket()) for _ in range(count)]
+        for s in sockets:
+            s.bind(('127.0.0.1', 0))
+        return [s.getsockname() for s in sockets]
 
 class ShellMux:
     """Serve um socket unix (shell.sock) ligado ao console de shell do guest (UART2)."""
@@ -35,9 +45,14 @@ class ShellMux:
         self.clients = []; self.lock = threading.Lock(); self.stop = False; self.up = False
         self.tail = collections.deque(maxlen=400)
     def start(self):
-        try: os.unlink(self.path)
-        except OSError: pass
-        self.srv = socket.socket(socket.AF_UNIX); self.srv.bind(self.path); self.srv.listen(8)
+        tcp = isinstance(self.path, tuple)
+        if not tcp:
+            try: os.unlink(self.path)
+            except OSError: pass
+        self.srv = socket.socket(socket.AF_INET if tcp else socket.AF_UNIX)
+        self.srv.bind(self.path)
+        if tcp: self.path = self.srv.getsockname()
+        self.srv.listen(8)
         threading.Thread(target=self._accept, daemon=True).start()
         threading.Thread(target=self._pump, daemon=True).start()
     def _accept(self):
@@ -59,7 +74,7 @@ class ShellMux:
             try: c.close()
             except OSError: pass
     def _pump(self):
-        try: self.u = _unix_connect(self.uart_sock, 60)
+        try: self.u = _connect(self.uart_sock, 60, self._check_open)
         except Exception: return
         self.up = True
         while not self.stop:
@@ -73,13 +88,19 @@ class ShellMux:
                     except OSError: self.clients.remove(c)
     def close(self):
         self.stop = True
-        try: self.srv.close()
-        except Exception: pass
+        for s in (getattr(self, 'srv', None), getattr(self, 'u', None), *self.clients[:]):
+            if not s: continue
+            try: s.shutdown(socket.SHUT_RDWR)
+            except OSError: pass
+            s.close()
+
+    def _check_open(self):
+        if self.stop: raise OSError('Guest shell closed')
 
 class Qmp:
     """Cliente mínimo do QMP (monitor do QEMU)."""
     def __init__(self, path, timeout=30, check=None):
-        self.s = _unix_connect(path, timeout, check); self.s.settimeout(120); self.f = self.s.makefile('r'); self.lock = threading.Lock()
+        self.s = _connect(path, timeout, check); self.s.settimeout(120); self.f = self.s.makefile('r'); self.lock = threading.Lock()
         self.f.readline(); self.cmd('qmp_capabilities')
     def cmd(self, name, **args):
         with self.lock:
@@ -89,8 +110,10 @@ class Qmp:
                 if 'error' in r: raise RuntimeError('QMP %s: %s' % (name, r['error'].get('desc')))
                 if 'return' in r: return r['return']
     def close(self):
-        try: self.s.close()
+        try: self.s.shutdown(socket.SHUT_RDWR)
         except OSError: pass
+        self.f.close()
+        self.s.close()
 
 SNAP_FORMAT = 2
 
@@ -101,7 +124,9 @@ class Runtime:
     def __init__(self, env_dir, env, run_root=None):
         self.env_dir, self.env = env_dir, env
         self.id = env['id']
-        self.run = os.path.join(run_root or '/tmp/idemu-%d' % os.getuid(), self.id)
+        self.native = sys.platform == 'win32'
+        self.bin = catalog.NATIVE_BIN if self.native else BIN
+        self.run = os.path.join(run_root or catalog.runtime_root(), self.id)
         self.img = os.path.join(env_dir, 'images'); self.logd = os.path.join(env_dir, 'logs')
         self.ctl = os.path.join(self.run, 'ctl')
         self.state = 'stopped'; self.err = None; self.t0 = None; self.step = ''; self.pct = 0
@@ -109,6 +134,7 @@ class Runtime:
         self.frame_path = os.path.join(self.run, 'frame.rgb'); self._fm = None
         self._png = (None, None); self.con = collections.deque(maxlen=2000)
         self._cmd_lock = threading.Lock(); self.fps_t = collections.deque(maxlen=400); self._life = threading.Lock()
+        self.input_endpoint = None
         self.stop_ev = threading.Event(); self.marks = {}
         self.snap_dir = os.path.join(env_dir, 'snapshot'); self.qmp = None; self.boot_kind = None; self.cpu_pct = 100.0
 
@@ -145,7 +171,7 @@ class Runtime:
         return {'valid': self.snapshot_valid(), 'size': size, 'enabled': self.fast_boot_enabled()}
 
     def fast_boot_enabled(self):
-        return self.env.get('fast_boot', True) and not os.environ.get('IDEMU_NO_SNAPSHOT')
+        return not self.native and self.env.get('fast_boot', True) and not os.environ.get('IDEMU_NO_SNAPSHOT')
 
     def drop_snapshot(self):
         import shutil
@@ -182,7 +208,7 @@ class Runtime:
 
     def _launch(self, resume=False, record=False):
         """Sobe renderizador e QEMU; devolve os caminhos dos sockets seriais."""
-        B = BIN + '/'; R = self.run + '/'
+        B = self.bin + '/'; R = self.run + '/'
         if catalog.WSL:
             if not os.environ.get('DISPLAY'):
                 raise RuntimeError('The iDrive 5/6 renderer needs WSLg with an X11 display.')
@@ -201,19 +227,44 @@ class Runtime:
         if record:
             os.makedirs(self.snap_dir, exist_ok=True); env['GLHOST_RECORD'] = S + 'gl.rec.tmp'
         self.step = 'Iniciando renderizador'; self.pct = 3
-        self._spawn('gl', [B + 'glhost'], env=env, stdout=self._log('renderer.log'), stderr=subprocess.STDOUT, cwd=B)
+        suffix = '.exe' if self.native else ''
+        self._spawn('gl', [B + 'glhost' + suffix], env=env, stdout=self._log('renderer.log'), stderr=subprocess.STDOUT, cwd=B)
+        qmp = R + 'qmp.sock'
+        if self.native:
+            ports_file = os.path.join(self.ctl, 'renderer.ports')
+            for _ in range(200):
+                self._check_startup(self.gl, 'Renderer', 'renderer.log')
+                if os.path.isfile(ports_file): break
+                time.sleep(0.05)
+            else:
+                raise RuntimeError('The Windows renderer did not publish its ports.')
+            with open(ports_file, encoding='ascii') as f:
+                gl_port, input_port = map(int, f.read().split())
+            self.input_endpoint = ('127.0.0.1', input_port)
+            env['OMAP5_GL_PORT'] = str(gl_port)
+            ser, ser2, ser1, ser4, qmp = _loopback_endpoints(5)
+        else:
+            self.input_endpoint = os.path.join(self.ctl, 'input.sock')
+
+        def listener(endpoint, serial=False):
+            if isinstance(endpoint, tuple):
+                opt = ',nodelay=on' if serial else ''
+                return f'tcp:{endpoint[0]}:{endpoint[1]},server=on,wait=off{opt}'
+            return 'unix:%s,server,nowait' % endpoint
+
         I = self.img + '/'
-        args = [B + 'qemu-system-arm', '-M', 'omap5-uevm', '-m', '2048', '-cpu', os.environ.get('IDEMU_CPU', CPU), '-display', 'none',
-                '-serial', 'unix:%s,server,nowait' % ser, '-serial', 'unix:%s,server,nowait' % ser2,
-                '-serial', 'unix:%s,server,nowait' % ser1, '-serial', 'unix:%s,server,nowait' % ser4, '-monitor', 'none',
-                '-qmp', 'unix:%sqmp.sock,server,nowait' % R]
+        args = [B + 'qemu-system-arm' + suffix, '-M', 'omap5-uevm', '-m', '2048', '-cpu', os.environ.get('IDEMU_CPU', CPU), '-display', 'none',
+                '-serial', listener(ser, True), '-serial', listener(ser2, True),
+                '-serial', listener(ser1, True), '-serial', listener(ser4, True),
+                '-monitor', 'none', '-qmp', listener(qmp)]
         if resume:
             args += ['-S', '-incoming', 'file:%svm.bin' % S]
         else:
-            for _ in range(100):
-                self._check_startup(self.gl, 'Renderer', 'renderer.log')
-                if os.path.exists(gls): break
-                time.sleep(0.05)
+            if not self.native:
+                for _ in range(100):
+                    self._check_startup(self.gl, 'Renderer', 'renderer.log')
+                    if os.path.exists(gls): break
+                    time.sleep(0.05)
             args += ['-device', 'loader,file=%sboot.ifs,addr=0x80100000' % I,
                      '-device', 'loader,file=%s,addr=0xbff00000' % os.environ.get('IDEMU_STUB', os.path.join(HERE, 'data', 'stub.bin')),
                      '-device', 'loader,addr=0xbff00000,cpu-num=0',
@@ -224,7 +275,7 @@ class Runtime:
         self.step = 'Iniciando QEMU'; self.pct = 5
         self._spawn('q', args, env=env, stdout=self._log('qemu.log'), stderr=subprocess.STDOUT)
         self.ser4 = ser4
-        self.qmp = Qmp(R + 'qmp.sock', check=lambda: self._check_startup(self.q, 'QEMU', 'qemu.log'))
+        self.qmp = Qmp(qmp, check=lambda: self._check_startup(self.q, 'QEMU', 'qemu.log'))
         return ser, ser2, ser1
 
     def _boot(self):
@@ -255,7 +306,8 @@ class Runtime:
         """Volta de um snapshot: em vez de reiniciar o sistema, restaura a RAM/CPU (QEMU), o estado GL (replay no glhost) e o V850 virtual."""
         self.boot_kind = 'fast'; self.step = 'Restaurando o sistema salvo'; self.pct = 20
         ser, ser2, ser1 = self._launch(resume=True)
-        threading.Thread(target=self._profile, daemon=True).start()
+        if not self.native:
+            threading.Thread(target=self._profile, daemon=True).start()
         end = time.time() + 120
         while self.qmp.cmd('query-status')['status'] == 'inmigrate':
             if time.time() > end or self._dead(): raise RuntimeError('o QEMU não terminou de carregar o snapshot')
@@ -267,7 +319,7 @@ class Runtime:
         self._mark('gl_loaded'); self.pct = 70
         with open(os.path.join(self.snap_dir, 'host.json')) as f: host = json.load(f)
         self._start_services(ser2, ser1, host)
-        s = _unix_connect(ser, 30); s.setblocking(False)
+        s = _connect(ser, 30); s.setblocking(False)
         self.cons = s; self.conlog = open(os.path.join(self.logd, 'console.log'), 'wb'); self._scan = None
         self.qmp.cmd('cont'); self._mark('resumed'); self.pct = 85
         self.step = 'Verificando o sistema'
@@ -279,7 +331,7 @@ class Runtime:
     def _guest_alive(self, timeout):
         """Pergunta ao shell do guest (UART2): prova que o sistema restaurado continua rodando."""
         tag = b'IDEMU_ALIVE_%d' % int(time.time())
-        c = _unix_connect(os.path.join(self.run, 'shell.sock'), 5); c.settimeout(0.5); buf = b''; end = time.time() + timeout; last = 0
+        c = _connect(self.mux.path, 5); c.settimeout(0.5); buf = b''; end = time.time() + timeout; last = 0
         try:
             while time.time() < end:
                 if time.time() - last > 2:
@@ -296,9 +348,10 @@ class Runtime:
         record = self.fast_boot_enabled()
         self.boot_kind = 'cold'
         ser, ser2, ser1 = self._launch(record=record)
-        threading.Thread(target=self._profile, daemon=True).start()
+        if not self.native:
+            threading.Thread(target=self._profile, daemon=True).start()
         self._start_services(ser2, ser1)
-        s = _unix_connect(ser, 30); s.setblocking(False)
+        s = _connect(ser, 30, self._check_qemu); s.setblocking(False)
         self.cons = s; self.conlog = open(os.path.join(self.logd, 'console.log'), 'wb')
         self.step = 'Aguardando o QNX (console)'; self.pct = 8
         self._mark('console')
@@ -472,7 +525,8 @@ class Runtime:
         self.cons.send((c + '\n').encode()); return self._drain(w)
 
     def _start_services(self, ser2, ser1, host=None):
-        self.mux = ShellMux(ser2, os.path.join(self.run, 'shell.sock')); self.mux.start()
+        shell = ('127.0.0.1', 0) if self.native else os.path.join(self.run, 'shell.sock')
+        self.mux = ShellMux(ser2, shell); self.mux.start()
         try:
             from . import v850
             if os.environ.get('IDEMU_V850_EXTERNAL'): raise RuntimeError('V850 externo (modo de desenvolvimento): python3 -m idemu.v850')
@@ -489,7 +543,7 @@ class Runtime:
         try:
             self.can = canbus.CanBus(tcp_port=net.get('can_port'), rec_dir=os.path.join(self.env_dir, 'recordings')); self.can.start()
             self.gps = gps.GpsSim(can=self.can, tcp_port=net.get('gps_port')); self.gps.start()
-            self.map = mapsvc.MapService(self.ctl, self.gps, catalog.load_settings()); self.map.start()
+            self.map = mapsvc.MapService(self.ctl, self.gps, catalog.load_settings(), input_endpoint=self.input_endpoint); self.map.start()
             if getattr(self, 'v850', None): self.v850.bridge.car.map = self.map
             if getattr(self, 'v850', None): self.v850.bridge.car.gps = self.gps; self.v850.bridge.car.attach_can(self.can)      # dados do carro -> HMI (MOST, ponte do canal 25)
             # Canal de arquivos CAN/GPS no guest (/var/idemu/{can,gps}, UART1): ninguém no guest o consome desde que os dados chegam ao HMI pelo MOST
@@ -498,8 +552,9 @@ class Runtime:
         except Exception as e:
             self.con.append('[idemu] CAN/GPS: %s' % e)
         try:
-            self.ssh = sshbridge.SshBridge(self.env_dir, net.get('ssh_port', 2222), os.path.join(self.run, 'shell.sock'))
-            ok, msg = self.ssh.start(); self.con.append('[idemu] ssh: %s' % msg)
+            if not self.native:
+                self.ssh = sshbridge.SshBridge(self.env_dir, net.get('ssh_port', 2222), self.mux.path)
+                ok, msg = self.ssh.start(); self.con.append('[idemu] ssh: %s' % msg)
         except Exception as e:
             self.con.append('[idemu] SSH: %s' % e)
         if self.stop_ev.is_set(): self._kill_children()       # parado enquanto os serviços subiam
@@ -508,8 +563,13 @@ class Runtime:
         """Popen que não deixa processo órfão: com o ambiente já parado, não inicia; o processo novo fica em self.<attr> antes que stop() possa olhar."""
         with self._life:
             if self.stop_ev.is_set(): raise BootStopped()
+            if self.native:
+                kw.setdefault('creationflags', subprocess.CREATE_NO_WINDOW)
             p = subprocess.Popen(*a, **kw); setattr(self, attr, p)
             return p
+
+    def _check_qemu(self):
+        self._check_startup(self.q, 'QEMU', 'qemu.log')
 
     def stop(self):
         with self._life: self.stop_ev.set()
@@ -524,6 +584,10 @@ class Runtime:
             except Exception: pass
         self.v850 = self.data = self.map = None; self.ssh = self.gps = self.can = self.mux = None
         if self.qmp: self.qmp.close(); self.qmp = None
+        for name in ('cons', 'conlog', '_insock'):
+            stream = getattr(self, name, None)
+            if stream: stream.close()
+            setattr(self, name, None)
         for p in (self.q, self.gl):
             try:
                 if p: p.terminate()
@@ -541,7 +605,7 @@ class Runtime:
         net = self.env.get('net', {})
         return {'state': self.state, 'env': self.id, 'uptime_s': round(time.time() - self.t0, 1) if self.t0 and self.state != 'stopped' else 0,
                 'boot_step': self.step, 'boot_pct': self.pct,
-                'ports': {'ssh': net.get('ssh_port'), 'can': net.get('can_port'), 'gps': net.get('gps_port')},
+                'ports': {'ssh': None if self.native else net.get('ssh_port'), 'can': net.get('can_port'), 'gps': net.get('gps_port')},
                 'frame_seq': self.frame_seq(), 'fps': self._fps(), 'error': self.err, 'boot_kind': self.boot_kind, 'marks': self.marks}
 
     def _fps(self):
@@ -554,8 +618,8 @@ class Runtime:
     def _map(self):
         if self._fm is None:
             try:
-                f = open(self.frame_path, 'rb')
-                self._fm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+                with open(self.frame_path, 'rb') as f:
+                    self._fm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
             except Exception:
                 return None
         return self._fm
@@ -597,9 +661,11 @@ class Runtime:
     # ---------- entrada ----------
     def send_cmd(self, line):
         with self._cmd_lock:
+            if self.input_endpoint is None:
+                return
             if getattr(self, '_insock', None) is None:
-                self._insock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-            self._insock.sendto(line.encode(), os.path.join(self.ctl, 'input.sock'))
+                self._insock = socket.socket(socket.AF_INET if self.native else socket.AF_UNIX, socket.SOCK_DGRAM)
+            self._insock.sendto(line.encode(), self.input_endpoint)
 
     def key(self, code, val): self.send_cmd('1 %d %d' % (code, val))
     def touch(self, x, y, down, move=False):
@@ -623,7 +689,7 @@ class DataChannel:
     def _nmea(self, line):
         with self.lock: self.dirty['G ' + line.strip()] = 'g' + line.strip()[:6]
     def _run(self):
-        try: self.sock = _unix_connect(self.uart_sock, 90)
+        try: self.sock = _connect(self.uart_sock, 90)
         except Exception: return
         while not self.stop_ev.is_set():
             time.sleep(0.25)

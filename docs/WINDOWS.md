@@ -67,19 +67,30 @@ Run `IDEmu-Setup.exe`. Setup installs for your Windows account and adds Start me
 
 **Check for updates** looks at the latest stable [GitHub release](https://github.com/KClemente11/IDEmu/releases) from this fork. If it finds a newer version, it asks before downloading, verifies the installer's SHA-256 against GitHub's release metadata, then opens Setup. Close the emulator or firmware tool first so Setup can replace the app files.
 
-To build the installer locally, install Inno Setup on the build machine and build the WSL helpers as described above. Then run:
+To build the WSL installer locally, install Inno Setup on the build machine and build the WSL helpers as described above. Then run:
 
 ```powershell
 .\.build-tools\Scripts\python.exe .\build_installer.py --version 0.1.0
 .\dist\installer\IDEmu-Setup.exe
 ```
 
-Pass `--iscc C:\path\to\ISCC.exe` if the compiler is outside its normal install location. The GitHub **Windows installer** workflow can build a test artifact manually. Pushing a stable `vX.Y.Z` tag to the fork builds and publishes `IDEmu-Setup.exe` and the corresponding upstream QEMU source archive. The tag supplies the IDEmu patches and build scripts. The updater ignores prereleases and does not execute files from branch commits.
+Pass `--iscc C:\path\to\ISCC.exe` if the compiler is outside its normal install location. The GitHub **Windows installer** workflow can build test artifacts manually. Pushing a stable `vX.Y.Z` tag to the fork publishes the two Windows installers and the corresponding upstream QEMU source archive. The tag supplies the IDEmu patches and build scripts. The updater uses stable release assets.
 
-## Path to a native Windows runtime
+## Native iDrive 6 installer
 
-Use the native prep app as the Windows entry point. System Files should accept a Windows folder such as `C:\BMW\PSdZData`, validate the exact SWFL versions for the selected head unit, and keep references to the source files. Put generated images, settings and logs under `%LOCALAPPDATA%\IDEmu` by default.
+The native edition includes Windows builds of the patched OMAP5 QEMU and OpenGL renderer. Use System Files to validate firmware at `C:\BMW\PSdZData` and build an iDrive 6 environment. The app keeps generated images, settings, and logs under `%LOCALAPPDATA%\IDEmu`. The renderer requires a Windows OpenGL driver that supports OpenGL 2.1 and framebuffer objects.
 
-1. Build the patched OMAP5 QEMU machine as a Windows x64 executable. Use loopback endpoints for its monitor and guest serial connections; adapt the custom graphics bridge and controller transport for Windows.
-2. Build a Windows renderer, using a native OpenGL context and Windows frame sharing. Check the reference iDrive 6 profile from cold boot through the first HMI frame, controller input, and clean shutdown before adding iDrive 5.
-3. Ship the native helpers with the app in one installer. On a clean Windows machine with no WSL distro, verify that a user can select firmware in System Files, build an environment, boot it, and close it without installing Python or QEMU. Keep additional generations gated until their native backends pass the same checks.
+Build the native runtime in an x64 MSYS2 UCRT64 shell. Use a Windows build directory without spaces. The installed app ships its Windows executables and DLLs.
+
+```sh
+pacman -S --needed git diffutils mingw-w64-ucrt-x86_64-{gcc,python,python-pip,python-setuptools,python-wheel,pkgconf,ninja,glib2,pixman,dtc,freeglut,glew,libpng}
+bash tools/qemu/build-windows-native.sh /path/to/qemu-11.1.2.tar.xz
+```
+
+Then build Setup from Windows PowerShell using the existing PyInstaller and Inno Setup tools.
+
+```powershell
+.\.build-tools\Scripts\python.exe .\build_installer.py --backend native --version 0.1.0 --output-dir .\dist\native-installer
+```
+
+`IDEmu-Native-Setup.exe` installs alongside the WSL edition. The update shortcut looks for the native installer asset in the same repository. The initial native runtime supports iDrive 6 cold boot. Use the WSL edition for snapshots, guest SSH, or its other supported generations.

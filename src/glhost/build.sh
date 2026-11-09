@@ -14,6 +14,12 @@ case "$(uname -s)" in
     "${CC:-cc}" ${CPPFLAGS:-} ${CFLAGS:-} -O2 host.c pngload.c ${LDFLAGS:-} \
       $pixbuf_flags -lglut -lGL -lX11 -lm -o ../../bin/glhost
     ;;
+  MINGW*|UCRT*)
+    mkdir -p ../../bin/windows
+    "${CC:-gcc}" -O2 host.c pngload.c -o ../../bin/windows/glhost.exe \
+      -lglew32 -lfreeglut -lopengl32 -lws2_32 -lpng
+    exit 0
+    ;;
   *)
     echo "glhost requires macOS or Linux (including WSL2)." >&2
     exit 1
