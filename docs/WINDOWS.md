@@ -61,6 +61,21 @@ To build the native Windows firmware-preparation application:
 
 `IDEmu-Prep.exe` opens System Files and builds iDrive 5/6 images on Windows. It stores data under `%LOCALAPPDATA%\IDEmu`. Booting the VM from this application requires the Windows QEMU and renderer port. To keep multiple builds, pass `--output-dir` with a new directory.
 
+## Install and update on Windows
+
+Run `IDEmu-Setup.exe`. Setup installs for your Windows account and adds Start menu shortcuts for the WSL2 emulator, the native Windows firmware tool, and **Check for updates**. It does not install or configure WSL. Both tools look for `C:\BMW\PSdZData` on a fresh setup; you can select another directory in System Files. Existing settings take precedence. The installer and uninstaller leave firmware, environments, and user settings in their existing locations.
+
+**Check for updates** looks at the latest stable [GitHub release](https://github.com/KClemente11/IDEmu/releases) from this fork. If it finds a newer version, it asks before downloading, verifies the installer's SHA-256 against GitHub's release metadata, then opens Setup. Close the emulator or firmware tool first so Setup can replace the app files.
+
+To build the installer locally, install Inno Setup on the build machine and build the WSL helpers as described above. Then run:
+
+```powershell
+.\.build-tools\Scripts\python.exe .\build_installer.py --version 0.1.0
+.\dist\installer\IDEmu-Setup.exe
+```
+
+Pass `--iscc C:\path\to\ISCC.exe` if the compiler is outside its normal install location. The GitHub **Windows installer** workflow can build a test artifact manually. Pushing a stable `vX.Y.Z` tag to the fork builds and publishes `IDEmu-Setup.exe` and the corresponding upstream QEMU source archive. The tag supplies the IDEmu patches and build scripts. The updater ignores prereleases and does not execute files from branch commits.
+
 ## Path to a native Windows runtime
 
 Use the native prep app as the Windows entry point. System Files should accept a Windows folder such as `C:\BMW\PSdZData`, validate the exact SWFL versions for the selected head unit, and keep references to the source files. Put generated images, settings and logs under `%LOCALAPPDATA%\IDEmu` by default.

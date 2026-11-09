@@ -1,5 +1,7 @@
 """Entry point for the frozen Windows builds."""
 import argparse
+import ctypes
+from ctypes import wintypes
 import os
 from pathlib import Path
 import subprocess
@@ -28,6 +30,23 @@ def run_wsl(root, argv):
 
 
 def main():
+    if sys.argv[1:] == ['--check-update']:
+        from idemu.windows_update import main as update
+        return update()
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.CreateMutexW.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR)
+    kernel.CreateMutexW.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+    mutex = kernel.CreateMutexW(None, False, 'IDEmu.Windows.App')
+    if not mutex:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return run_app()
+    finally:
+        kernel.CloseHandle(mutex)
+
+
+def run_app():
     payload = Path(__file__).resolve().parent / 'wsl'
     if payload.is_dir():
         return run_wsl(payload, sys.argv[1:])

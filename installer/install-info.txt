@@ -1,0 +1,5 @@
+IDEmu uses your BMW system files from C:\BMW\PSdZData by default. You can choose another folder in System Files. Setup does not copy firmware into the installation.
+
+Use “IDEmu (WSL2)” to boot a head unit. That runtime requires Ubuntu under WSL2 and WSLg. Use “Prepare firmware (Windows)” to validate firmware and build iDrive 5/6 images without WSL.
+
+The “Check for updates” shortcut checks the IDEmu fork's published GitHub Releases. Setup keeps your firmware, environments, and settings outside the installation directory.

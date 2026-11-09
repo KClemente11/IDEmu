@@ -1,0 +1,95 @@
+name: Windows installer
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Installer version (X.Y.Z); builds an artifact without publishing
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: ubuntu-24.04
+    env:
+      QEMU_BUILD_JOBS: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build WSL helpers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl git ninja-build pkg-config python3-venv xz-utils \
+            libglib2.0-dev libpixman-1-dev libfdt-dev libglut-dev libgl-dev libx11-dev libgdk-pixbuf-2.0-dev
+          curl --fail --location --retry 3 https://download.qemu.org/qemu-11.1.2.tar.xz -o qemu-11.1.2.tar.xz
+          sh tools/qemu/build-windows-payload.sh qemu-11.1.2.tar.xz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wsl-runtime
+          path: bin/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qemu-upstream-source
+          path: qemu-11.1.2.tar.xz
+          compression-level: 0
+
+  installer:
+    runs-on: windows-2025
+    needs: runtime
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          architecture: x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: wsl-runtime
+          path: bin
+      - name: Build setup
+        env:
+          DISPATCH_VERSION: ${{ inputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.Substring(1) } else { $env:DISPATCH_VERSION }
+          $setup = Join-Path $env:RUNNER_TEMP 'innosetup-7.1.1-x64.exe'
+          $compiler = Join-Path $env:RUNNER_TEMP 'Inno Setup'
+          Invoke-WebRequest -Uri 'https://github.com/jrsoftware/issrc/releases/download/is-7_1_1/innosetup-7.1.1-x64.exe' -OutFile $setup
+          $sig = Get-AuthenticodeSignature -LiteralPath $setup
+          if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch '^CN=Pyrsys B\.V\.,') { throw 'Invalid Inno Setup publisher' }
+          $p = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/CURRENTUSER','/NOICONS','/NORESTART',('/DIR="' + $compiler + '"')) -Wait -PassThru -WindowStyle Hidden
+          if ($p.ExitCode -ne 0) { throw "Inno Setup exited with $($p.ExitCode)" }
+          python -m pip install pyinstaller==6.22.3
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python build_installer.py --version $version --iscc (Join-Path $compiler 'ISCC.exe')
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: dist/installer/IDEmu-Setup.exe
+          if-no-files-found: error
+
+  release:
+    if: github.repository == 'KClemente11/IDEmu' && github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    needs: installer
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+      - uses: actions/download-artifact@v4
+        with:
+          name: qemu-upstream-source
+      - name: Publish the tagged installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" IDEmu-Setup.exe qemu-11.1.2.tar.xz \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --latest \
+            --notes 'Windows setup includes the WSL2 emulator and the native firmware prep tool. The QEMU source archive is provided alongside the build scripts and patches at this tag.'

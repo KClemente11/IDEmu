@@ -18,8 +18,12 @@ def load_settings():
             continue
         except (ValueError, OSError):
             return {}
-    default = os.path.expanduser('~/IDEmu')
-    return {'psdz_path': default} if WSL and psdz_ok(default) else {}
+    defaults = ((r'C:\BMW\PSdZData',) if sys.platform == 'win32' else
+                ('/mnt/c/BMW/PSdZData', os.path.expanduser('~/IDEmu')) if WSL else ())
+    for default in defaults:
+        if psdz_ok(default):
+            return {'psdz_path': default}
+    return {}
 
 def save_settings(d):
     s = load_settings(); s.update(d)
