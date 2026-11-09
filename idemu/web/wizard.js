@@ -662,6 +662,7 @@
       }, 700);
     }
     function stopBuild() { if (stopBuildLoop) { stopBuildLoop(); stopBuildLoop = null; } }
+    function translatedBuildLog(log) { return (log || []).map((line) => IDE.t(line)).join('\n'); }
     function buildPanel() {
       const b = W.build || {};
       const title = { creating: 'Criando ambiente…', building: 'Compilando ambiente…', done: 'Ambiente pronto!', builderr: 'O build falhou' }[W.phase];
@@ -673,7 +674,7 @@
         W.phase === 'builderr' ? h('div', { class: 'note danger' }, ic('alert', 16), h('span', null, b.error || 'Erro desconhecido durante o build. Veja o log abaixo.')) : null,
         W.phase === 'done' ? h('div', { class: 'note ok' }, ic('check', 18), h('span', null, IDE.t('O ambiente "{name}" foi criado e compilado. Já pode iniciar.', { name: W.env ? W.env.name : '' }))) : null,
         h('div', { class: 'lbl' }, 'Log do build'),
-        h('pre', { id: 'wb-log', class: 'logbox' }, (b.log || []).join('\n')));
+        h('pre', { id: 'wb-log', class: 'logbox' }, translatedBuildLog(b.log)));
     }
     function updateBuildUI() {
       const b = W.build || {};
@@ -683,7 +684,7 @@
       document.getElementById('wb-pct').textContent = (b.pct || 0) + '%';
       const lg = document.getElementById('wb-log');
       const atBottom = lg.scrollTop + lg.clientHeight >= lg.scrollHeight - 24;
-      lg.textContent = (b.log || []).join('\n');
+      lg.textContent = translatedBuildLog(b.log);
       if (atBottom) lg.scrollTop = lg.scrollHeight;
     }
 

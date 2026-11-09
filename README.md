@@ -1,4 +1,4 @@
-# IDEmu: a BMW iDrive head-unit emulator for macOS
+# IDEmu: a BMW iDrive head-unit emulator for macOS and Windows
 
 IDEmu runs the **original head-unit software** of BMW iDrive systems (HMI, window system and services) inside QEMU virtual machines, with its own
 web interface, a virtual iDrive controller, virtual CAN bus and GPS, and a coding editor. It is a research and learning tool: you bring your own
@@ -6,7 +6,36 @@ firmware packages, IDEmu builds the disk images locally.
 
 > Português: [README.pt-BR.md](README.pt-BR.md) · License: [PolyForm Noncommercial 1.0.0](LICENSE) · See [NOTICE](NOTICE) for what is **not** in this repo.
 
-## Supported systems
+## Windows standalone
+
+**IDEmu Native** runs iDrive 6 (NBT Evo) on Windows x64 without WSL. The installer bundles the Windows app, QEMU, the OpenGL renderer, and their
+runtime libraries. You need a graphics driver with OpenGL 2.1 and framebuffer object support, plus your own BMW firmware.
+
+1. Run `IDEmu-Native-Setup.exe` from a published [GitHub release](https://github.com/KClemente11/IDEmu/releases) or build it locally.
+2. Open **IDEmu Native** from the Start menu. In **System Files**, validate your PSdZData folder. The default is `C:\BMW\PSdZData`.
+3. Create an **iDrive 6** environment, select the required SWFL files, then choose **Build** and **Start**.
+
+The installer ships without BMW firmware. IDEmu builds the guest disk images locally and stores them with your settings and logs under
+`%LOCALAPPDATA%\IDEmu`. This edition supports cold boot, with snapshots and guest SSH disabled. The **Check for updates** Start menu shortcut
+looks for the native installer in stable GitHub releases. See the [Windows guide](docs/WINDOWS.md) for the separate WSL2 edition.
+
+### Build the standalone installer
+
+The installer is built from this repository's Python app, web interface, and guest support files, plus Windows executables compiled from
+the pinned **QEMU 11.1.2** source with IDEmu's OMAP5 patch and the renderer sources in `src/glhost/`. The
+[native runtime build script](tools/qemu/build-windows-native.sh) compiles the helpers in MSYS2 UCRT64 and stages their DLLs in `bin/windows/`.
+[PyInstaller](build_windows.py) bundles the app with those helpers, and [Inno Setup](installer/windows.iss) turns that bundle into the installer.
+
+After building the native helpers and installing the packaging tools as described in the
+[Windows build guide](docs/WINDOWS.md#native-idrive-6-installer), run this from the repository root in PowerShell:
+
+```powershell
+.\.build-tools\Scripts\python.exe .\build_installer.py --backend native --version 0.1.0 --output-dir .\dist\native-installer
+```
+
+The output is `dist\native-installer\IDEmu-Native-Setup.exe`.
+
+## Supported systems on macOS
 
 | System | Hardware / OS emulated | Level* | What works | What does not (yet) |
 |---|---|---|---|---|
@@ -19,7 +48,7 @@ firmware packages, IDEmu builds the disk images locally.
 \* Functionality level as shown in the "New environment" assistant (average over 12 features). Maps and route guidance are not available on any
 system: the firmware packages do not carry map data and the navigation engine does not run.
 
-## What you need
+## What you need on macOS
 
 * A Mac with Apple Silicon (iDrive 8 uses the Hypervisor framework) and macOS 14 or later. Python 3 (the system one is enough).
 * Your **own firmware packages** (PSdZData / SWFL files). The assistant tells you which exact files each iDrive version needs and can scan a folder
@@ -29,9 +58,7 @@ system: the firmware packages do not carry map data and the navigation engine do
 * Renderer helpers (`glhost`, `glhost7`, `mguhost`) are built from [src](src) with clang. iDrive 8 also needs ANGLE (`libEGL.dylib` and `libGLESv2.dylib`),
   found in any installed Chromium-based app, or set `IDEMU_ANGLE`.
 
-## Quick start
-
-For the experimental **Windows 11 + WSL2** iDrive 5/6 backend, see [Windows setup](docs/WINDOWS.md).
+## macOS quick start
 
 ```bash
 ./IDEmu.command        # opens IDEmu in an Electron window (cd electron && npm install once); without Electron it opens your browser
