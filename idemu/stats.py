@@ -4,7 +4,7 @@ Um amostrador em segundo plano mede, a cada segundo, o QEMU (a VM) e o renderiza
 CPU, RAM residente, quadros por segundo e tempo de quadro, GPU do Mac e o espaço em disco do ambiente.
 Só usa `ps`, `ioreg`, `sysctl` e o cabeçalho do quadro compartilhado: nada é injetado na VM.
 """
-import os, re, time, shutil, threading, subprocess, collections
+import os, re, sys, time, shutil, threading, subprocess, collections
 
 INTERVAL = 1.0
 HISTORY = 900            # 15 minutos a 1 amostra/s
@@ -38,6 +38,7 @@ def ps_info(pids):
 
 def gpu_info():
     """Uso da GPU do sistema (não por processo: o macOS não expõe isso sem privilégios)."""
+    if sys.platform != 'darwin': return {}
     out = _run(['ioreg', '-r', '-d', '1', '-w0', '-c', 'IOAccelerator'])
     d = {}
     for k, key in (('Device Utilization %', 'dev'), ('Renderer Utilization %', 'render'), ('Tiler Utilization %', 'tiler'),
@@ -47,6 +48,7 @@ def gpu_info():
     return d
 
 def gpu_name():
+    if sys.platform != 'darwin': return None
     out = _run(['ioreg', '-r', '-d', '1', '-w0', '-c', 'IOAccelerator'])
     m = re.search(r'"model" = "([^"]+)"', out)
     return m.group(1) if m else None
@@ -71,7 +73,7 @@ class Sampler:
         self.frames = collections.deque(maxlen=2000)         # instantes (s) em que o renderizador entregou um quadro
         self.lock = threading.Lock()
         self.run_key = None; self.last = None
-        self.static = {'host_ram_mb': self._sysctl('hw.memsize') // (1 << 20), 'cores': os.cpu_count() or 1, 'gpu': None, 'guest_ram_mb': 2048}
+        self.static = {'host_ram_mb': self._host_ram() // (1 << 20), 'cores': os.cpu_count() or 1, 'gpu': None, 'guest_ram_mb': 2048}
         self.storage = {}; self.storage_t = {}
         self._stop = threading.Event()
         threading.Thread(target=self._fast, daemon=True).start()
@@ -79,8 +81,10 @@ class Sampler:
         threading.Thread(target=lambda: self.static.__setitem__('gpu', gpu_name()), daemon=True).start()
 
     @staticmethod
-    def _sysctl(k):
-        try: return int(_run(['sysctl', '-n', k]).strip() or 0)
+    def _host_ram():
+        if sys.platform.startswith('linux'):
+            return os.sysconf('SC_PHYS_PAGES') * os.sysconf('SC_PAGE_SIZE')
+        try: return int(_run(['sysctl', '-n', 'hw.memsize']).strip() or 0)
         except ValueError: return 0
 
     def stop(self): self._stop.set()

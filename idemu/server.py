@@ -1,11 +1,12 @@
 """Servidor HTTP local do IDEmu (API em docs/API.md + arquivos estáticos da GUI web)."""
-import os, re, json, time, shutil, threading, traceback, mimetypes, datetime
+import os, re, json, time, shutil, sys, threading, traceback, mimetypes, datetime
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from importlib import import_module
 from urllib.parse import urlparse, parse_qs
-from . import catalog, builder, runtime, codegen, coding, coding7, coding8, stats, mgu, mgu7, phone, cluster, cic
+from . import catalog, codegen, coding, stats, phone, cluster
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ENVS = os.path.join(ROOT, 'environments')
+ENVS = os.path.abspath(os.environ.get('IDEMU_ENVS') or os.path.join(catalog.STATE_DIR, 'environments'))
 WEB = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'web')
 VERSION = '0.1'
 
@@ -17,6 +18,23 @@ def slug(s):
     return s or 'ambiente'
 
 MIN_FREE = 1 << 30           # espaço livre mínimo (1 GiB) na pasta escolhida para a VM
+RUNTIME_TYPES = {None: 'Runtime', 'cic': 'CicRuntime', 'mgu7': 'Mgu7Runtime', 'mgu22': 'MguRuntime'}
+BUILD_MARKERS = {'cic': 'build.json', 'mgu7': 'root.img', 'mgu22': 'base.cpio'}
+
+def files_ok(env):
+    kind = env.get('kind')
+    if kind is not None:
+        return catalog.packages_ok(kind)
+    return catalog.evo_package_status(env.get('swfl') or {}, env.get('brand', 'bmw'))['ok']
+
+def require_system_files(env):
+    if not catalog.backend_supported(env.get('kind')):
+        raise ApiError('This iDrive generation is unavailable on this host.', 409)
+    if not files_ok(env):
+        raise ApiError('Confirm the required SWFL packages in System Files before using this environment.', 409)
+
+def runtime_module(kind):
+    return import_module('.' + catalog.DIRECT_BACKENDS.get(kind, 'runtime'), __package__)
 
 def fs_space(path):
     """Espaço livre e permissões de uma pasta (GET /api/fs/space), usado ao escolher onde a VM fica."""
@@ -34,44 +52,52 @@ class App:
     def env_dir(self, eid):
         if not re.match(r'^[a-z0-9][a-z0-9\-]*$', eid or ''): raise ApiError('id inválido')
         return os.path.join(ENVS, eid)
-    def env_kind(self, eid):
-        try: return json.load(open(os.path.join(self.env_dir(eid), 'env.json'))).get('kind')
-        except (OSError, ValueError): return None
-    def load_env(self, eid):
+    def read_env(self, eid):
         p = os.path.join(self.env_dir(eid), 'env.json')
         if not os.path.isfile(p): raise ApiError('ambiente não encontrado', 404)
-        env = json.load(open(p))
-        env['build'] = self.build_info(eid)
+        with open(p) as f:
+            return json.load(f)
+    def load_env(self, eid):
+        env = self.read_env(eid)
+        env['files_ok'] = files_ok(env)
+        env['runtime_available'] = sys.platform != 'win32' and catalog.backend_supported(env.get('kind'))
+        env['build'] = self.build_info(eid, env)
         env['fast_boot'] = env.get('fast_boot', True)
         env['snapshot'] = self.snapshot_info(eid, env)
         return env
     def snapshot_info(self, eid, env):
-        if env['build']['state'] != 'ready' or env.get('kind') in ('mgu22', 'cic'): return {'valid': False, 'size': 0, 'enabled': env['fast_boot'] and not env.get('kind')}
+        kind = env.get('kind')
+        if env['build']['state'] != 'ready' or kind in ('mgu22', 'cic') or sys.platform == 'win32':
+            return {'valid': False, 'size': 0, 'enabled': env['fast_boot'] and kind in (None, 'mgu7')}
         e = dict(env); e.pop('build', None); e.pop('snapshot', None)
-        try: return (mgu7.Mgu7Runtime if env.get('kind') == 'mgu7' else runtime.Runtime)(self.env_dir(eid), e).snapshot_info()
+        try: return getattr(runtime_module(kind), RUNTIME_TYPES[kind])(self.env_dir(eid), e).snapshot_info()
         except OSError: return {'valid': False, 'size': 0, 'enabled': env['fast_boot']}
     def save_env(self, env):
-        e = dict(env); e.pop('build', None); e.pop('snapshot', None)
+        e = dict(env)
+        for key in ('build', 'snapshot', 'files_ok', 'runtime_available'):
+            e.pop(key, None)
         os.makedirs(self.env_dir(e['id']), exist_ok=True)
         json.dump(e, open(os.path.join(self.env_dir(e['id']), 'env.json'), 'w'), indent=1, ensure_ascii=False)
-    def build_info(self, eid):
+    def build_info(self, eid, env=None):
+        env = self.read_env(eid) if env is None else env
+        kind = env.get('kind')
+        empty = {'state': 'none', 'pct': 0, 'step': '', 'error': None, 'built_at': None}
+        if not catalog.backend_supported(kind) or not (env['files_ok'] if 'files_ok' in env else files_ok(env)):
+            return empty
         b = self.builds.get(eid)
         if b: return {k: b[k] for k in ('state', 'pct', 'step', 'error', 'built_at')}
         d = self.env_dir(eid)
-        if self.env_kind(eid) == 'mgu7':
-            if mgu7.image_ready(): return {'state': 'ready', 'pct': 100, 'step': 'Pronto', 'error': None, 'built_at': datetime.datetime.fromtimestamp(os.path.getmtime(mgu7.OUT + '/root.img')).isoformat(timespec='seconds')}
-            return {'state': 'none', 'pct': 0, 'step': '', 'error': None, 'built_at': None}
-        if self.env_kind(eid) == 'cic':
-            if cic.image_ready(): return {'state': 'ready', 'pct': 100, 'step': 'Pronto', 'error': None, 'built_at': datetime.datetime.fromtimestamp(os.path.getmtime(cic.OUT + '/build.json')).isoformat(timespec='seconds')}
-            return {'state': 'none', 'pct': 0, 'step': '', 'error': None, 'built_at': None}
-        if self.env_kind(eid) == 'mgu22':
-            if mgu.image_ready(): return {'state': 'ready', 'pct': 100, 'step': 'Pronto', 'error': None, 'built_at': datetime.datetime.fromtimestamp(os.path.getmtime(mgu.OUT + '/base.cpio')).isoformat(timespec='seconds')}
-            return {'state': 'none', 'pct': 0, 'step': '', 'error': None, 'built_at': None}
+        if kind is not None:
+            mod = runtime_module(kind)
+            if not mod.image_ready(): return empty
+            marker = os.path.join(mod.OUT, BUILD_MARKERS[kind])
+            return {'state': 'ready', 'pct': 100, 'step': 'Pronto', 'error': None,
+                    'built_at': datetime.datetime.fromtimestamp(os.path.getmtime(marker)).isoformat(timespec='seconds')}
         bj = os.path.join(d, 'build.json')
         if os.path.isfile(bj) and all(os.path.isfile(os.path.join(d, 'images', n)) for n in ('boot.ifs', 'sda.img', 'sdb.img', 'shim.img')):
             return {'state': 'ready', 'pct': 100, 'step': 'Pronto', 'error': None,
                     'built_at': datetime.datetime.fromtimestamp(os.path.getmtime(bj)).isoformat(timespec='seconds')}
-        return {'state': 'none', 'pct': 0, 'step': '', 'error': None, 'built_at': None}
+        return empty
     def _alloc_home(self, eid, home):
         """Guarda a VM numa pasta escolhida: cria <home>/<id> e liga environments/<id> a ela por um link simbólico, então o resto do IDEmu segue usando
         environments/<id>. Devolve o caminho real escolhido, ou None para a pasta padrão."""
@@ -99,10 +125,11 @@ class App:
                 except Exception: pass
         return out
     def create(self, d):
+        require_system_files(d)
         name = (d.get('name') or '').strip() or 'Novo ambiente'
         eid = self._free_id(slug(name), d.get('home'))
         if d.get('kind') == 'mgu7':
-            if not catalog.packages_ok('mgu7'): raise ApiError('faltam arquivos do iDrive 7: escolha-os (ou a pasta) na etapa de arquivos')
+            from . import coding7
             role = d.get('role') or 'hu'
             if role not in ('hu', 'rse'): raise ApiError('tela do iDrive 7 desconhecida (use hu ou rse)')
             rse = role == 'rse'
@@ -112,18 +139,14 @@ class App:
                               'extra': {} if rse else dict(coding7.DEFAULT_HU)}, 'net': {}}
             return self._save_new(env, d.get('home'))
         if d.get('kind') == 'cic':
-            if not catalog.packages_ok('cic'): raise ApiError('o iDrive 4 precisa dos pacotes swfl_000003a6 e swfl_00000417 (versão 008_090_002)')
             env = {'id': eid, 'name': name, 'created': datetime.datetime.now().isoformat(timespec='seconds'), 'kind': 'cic', 'series': 'E90', 'chassis': 'CIC', 'brand': 'bmw',
                    'model_name': 'BMW CIC High (iDrive 4)', 'swfl': {}, 'coding': {'language': 'de_DE', 'units': 'metric', 'country': 'DE', 'vin': '', 'display': '1280x480', 'hmi_version': 'id4', 'navi': ''}, 'net': {}}
             return self._save_new(env, d.get('home'))
         if d.get('kind') == 'mgu22':
-            if not catalog.packages_ok('mgu22'): raise ApiError('faltam arquivos do iDrive 8: escolha-os (ou a pasta) na etapa de arquivos')
             env = {'id': eid, 'name': name, 'created': datetime.datetime.now().isoformat(timespec='seconds'), 'kind': 'mgu22', 'series': 'G70', 'chassis': 'G70', 'brand': 'bmw',
                    'model_name': 'BMW i7', 'swfl': {}, 'coding': {'language': 'en_GB', 'units': 'metric', 'country': 'GB', 'vin': '', 'display': '14_9_2880x960', 'hmi_version': 'id8', 'navi': ''}, 'net': {}}
             return self._save_new(env, d.get('home'))
         sw = d.get('swfl') or {}
-        for r in ('os', 'brand', 'hmi'):
-            if not sw.get(r) or not os.path.isfile(sw[r]): raise ApiError('arquivo SWFL ausente ou inexistente para "%s"' % r)
         cd = dict({'language': 'en_GB', 'units': 'metric', 'country': 'GB', 'vin': '', 'year': 2017, 'month': 7, 'lci': 1,
                    'display': '10_25_1440x540', 'hmi_version': 'id6_light', 'navi': 'keine_navi'}, **(d.get('coding') or {}))
         if cd.get('vin') and not re.match(r'^[A-HJ-NPR-Z0-9]{17}$', cd['vin'].upper()): raise ApiError('VIN deve ter 17 caracteres (sem I, O, Q)')
@@ -144,11 +167,14 @@ class App:
         env = self.load_env(eid); env.pop('build', None); env.pop('snapshot', None)
         if d.get('name'): env['name'] = d['name']
         if 'fast_boot' in d: env['fast_boot'] = bool(d['fast_boot'])
-        if 'coding' in d: env['coding'].update(d['coding'])
+        if 'coding' in d:
+            require_system_files(env)
+            env['coding'].update(d['coding'])
         if 'net' in d: env['net'].update(d['net'])
         self.save_env(env)
         # recodificar: refaz só o shim (rápido) se o ambiente já foi compilado
-        if self.build_info(eid)['state'] == 'ready' and 'coding' in d:
+        if 'coding' in d and not env.get('kind') and self.build_info(eid)['state'] == 'ready':
+            from . import builder
             try:
                 tmp = os.path.join(self.env_dir(eid), 'work'); os.makedirs(tmp, exist_ok=True)
                 os_dir = os.path.join(tmp, 'os'); self._extract_cfg(env, os_dir)
@@ -171,23 +197,25 @@ class App:
                 shutil.copy(src, target)
         shutil.rmtree(tmp, ignore_errors=True)
     def start_build(self, eid):
-        env = self.load_env(eid); env.pop('build', None); env.pop('snapshot', None)
+        env = self.read_env(eid)
+        require_system_files(env)
+        kind = env.get('kind')
         if self.rt and self.rt.id == eid and self.rt.state != 'stopped': raise ApiError('pare o ambiente antes de compilar')
         b = self.builds.get(eid)
         if b and b['state'] == 'building': raise ApiError('já compilando')
-        if env.get('kind') == 'mgu22' and mgu.image_ready(): return     # a imagem é compartilhada
-        if env.get('kind') == 'mgu7' and mgu7.image_ready(): return
-        if env.get('kind') == 'cic' and cic.image_ready(): return
+        if kind is not None and self.build_info(eid, env)['state'] == 'ready': return
         b = {'state': 'building', 'pct': 0, 'step': 'Iniciando', 'error': None, 'built_at': None, 'log': []}
         self.builds[eid] = b
         def log(s): b['log'].append(str(s)); b['log'] = b['log'][-300:]
         def prog(p, s): b['pct'] = p; b['step'] = s
         def run():
             try:
-                if env.get('kind') == 'mgu7': mgu7.build(catalog.effective_psdz('mgu7'), log=log, progress=prog)
-                elif env.get('kind') == 'mgu22': mgu.build(catalog.effective_psdz('mgu22'), log=log, progress=prog)
-                elif env.get('kind') == 'cic': cic.build(catalog.effective_psdz('cic'), log=log, progress=prog)
-                else: builder.build(env, self.env_dir(eid), log=log, progress=prog)
+                require_system_files(env)
+                if kind is not None:
+                    runtime_module(kind).build(catalog.effective_psdz(kind), log=log, progress=prog)
+                else:
+                    from . import builder
+                    builder.build(env, self.env_dir(eid), log=log, progress=prog)
                 b['state'] = 'ready'; b['pct'] = 100; b['step'] = 'Pronto'
                 b['built_at'] = datetime.datetime.now().isoformat(timespec='seconds')
                 time.sleep(0.5); self.builds.pop(eid, None)
@@ -220,17 +248,21 @@ class App:
     # ---- execução ----
     def start(self, eid, cold=False):
         if self.rt and self.rt.state in ('booting', 'running'): raise ApiError('já existe um ambiente em execução; pare-o primeiro')
-        env = self.load_env(eid); env.pop('build', None); env.pop('snapshot', None)
-        if self.build_info(eid)['state'] != 'ready': raise ApiError('compile o ambiente antes de iniciar')
+        env = self.read_env(eid)
+        require_system_files(env)
+        if sys.platform == 'win32': raise ApiError('Use the WSL launcher to run the head unit on Windows.', 409)
+        if self.build_info(eid, env)['state'] != 'ready': raise ApiError('compile o ambiente antes de iniciar')
         k = env.get('kind')
-        self.rt = cic.CicRuntime(self.env_dir(eid), env) if k == 'cic' else mgu.MguRuntime(self.env_dir(eid), env) if k == 'mgu22' else mgu7.Mgu7Runtime(self.env_dir(eid), env) if k == 'mgu7' else runtime.Runtime(self.env_dir(eid), env)
+        self.rt = getattr(runtime_module(k), RUNTIME_TYPES[k])(self.env_dir(eid), env)
         try: self.rt.start(cold=cold)
         except Exception as e: raise ApiError(str(e), 500)
     # ---- codificação (coding) ----
     def coding_info(self, eid):
         env = self.load_env(eid)
         if env.get('kind') == 'cic': raise ApiError('a edição de codificação ainda não existe para o iDrive 4')
-        try: d = coding7.describe(env, self.env_dir(eid)) if env.get('kind') == 'mgu7' else coding8.describe(env, self.env_dir(eid)) if env.get('kind') == 'mgu22' else coding.describe(env, self.env_dir(eid))
+        require_system_files(env)
+        cmod = import_module({'mgu7': '.coding7', 'mgu22': '.coding8'}.get(env.get('kind'), '.coding'), __package__)
+        try: d = cmod.describe(env, self.env_dir(eid))
         except Exception as e: raise ApiError('não foi possível ler os parâmetros de codificação: %s' % e, 500)
         d['running'] = bool(self.rt and self.rt.id == eid and self.rt.state in ('booting', 'running'))
         d['flash'] = self.flash_status(eid)
@@ -242,7 +274,9 @@ class App:
         """Grava a codificação: backup -> aplica -> regenera shim.img -> reinicia a head unit (se estiver ligada) -> confere que o HMI leu a tabela nova."""
         env = self.load_env(eid); env.pop('build', None); env.pop('snapshot', None)
         if env.get('kind') == 'cic': raise ApiError('a gravação de codificação ainda não existe para o iDrive 4')
+        require_system_files(env)
         if env.get('kind') in ('mgu7', 'mgu22'): return self.flash7(eid, env, changes, note, reset, restore)
+        from . import builder
         if self.build_info(eid)['state'] != 'ready': raise ApiError('compile o ambiente antes de gravar a codificação')
         if (self.flashes.get(eid) or {}).get('state') == 'running': raise ApiError('já existe uma gravação em andamento')
         if self.rt and self.rt.state in ('booting', 'running') and self.rt.id != eid: raise ApiError('outro ambiente está em execução; pare-o primeiro')
@@ -294,7 +328,9 @@ class App:
     def flash7(self, eid, env, changes, note, reset, restore):
         """iDrive 7 e 8: grava as mudanças em env.json e reinicia a VM. O iDrive 7 manda o bloco de codificação pela serial e o guest o escreve na memória compartilhada antes do HMI;
         o iDrive 8 leva uma coding.tab própria no initramfs (coding8.py). Nos dois o guest imprime "== coding applied N" e a gravação confere N."""
-        k8 = env.get('kind') == 'mgu22'; cmod = coding8 if k8 else coding7
+        require_system_files(env)
+        k8 = env.get('kind') == 'mgu22'
+        cmod = import_module('.coding8' if k8 else '.coding7', __package__)
         if self.build_info(eid)['state'] != 'ready': raise ApiError('compile o ambiente antes de gravar a codificação')
         if (self.flashes.get(eid) or {}).get('state') == 'running': raise ApiError('já existe uma gravação em andamento')
         if self.rt and self.rt.state in ('booting', 'running') and self.rt.id != eid: raise ApiError('outro ambiente está em execução; pare-o primeiro')
@@ -305,7 +341,7 @@ class App:
                 if reset: env['coding']['extra'] = {}
                 done = cmod.apply_changes(env, changes or {})
             blob = cmod.build_tab(env) if k8 else cmod.build_blob(env)
-            want = len((blob or ''.join('x\n' for _ in coding8.factory_tab())).splitlines()) if k8 else (len(blob) if blob else 0)
+            want = len((blob or ''.join('x\n' for _ in cmod.factory_tab())).splitlines()) if k8 else (len(blob) if blob else 0)
         except (ValueError, OSError) as e: raise ApiError(str(e))
         was_running = bool(self.rt and self.rt.id == eid and self.rt.state in ('booting', 'running'))
         steps = ['Backing up the current coding', 'Writing the coding', 'Restarting the head unit', 'Checking the head unit read it'] if was_running else ['Backing up the current coding', 'Writing the coding']
@@ -462,6 +498,12 @@ class H(BaseHTTPRequestHandler):
             if kind == 'files': return {'paths': [x for x in (r or '').split('\n') if x.strip()]}
             return {'path': r}
         if path == 'packages' and m == 'GET':
+            if q.get('kind') == 'evo':
+                if q.get('env'):
+                    env = A.read_env(q['env'])
+                    if env.get('kind'): raise ApiError('ambiente NBT Evo esperado')
+                    return catalog.evo_package_status(env.get('swfl') or {}, env.get('brand', 'bmw'))
+                return catalog.evo_package_status()
             if q.get('kind') not in ('cic', 'mgu7', 'mgu22'): raise ApiError('geração desconhecida')
             return catalog.package_status(q['kind'])
         if path == 'packages/pick' and m == 'POST':
@@ -650,8 +692,8 @@ def serve(host='127.0.0.1', port=8765, open_browser=True):
         if getattr(APP, '_phone', None): APP._phone.stop()
         if APP.rt: APP.rt.stop()
         os._exit(0)
-    for sg in (signal.SIGTERM, signal.SIGHUP):
-        signal.signal(sg, _bye)
+    signal.signal(signal.SIGTERM, _bye)
+    if hasattr(signal, 'SIGHUP'): signal.signal(signal.SIGHUP, _bye)
     if open_browser:
         threading.Timer(0.6, lambda: _open(url)).start()
     try: srv.serve_forever()
@@ -661,6 +703,15 @@ def serve(host='127.0.0.1', port=8765, open_browser=True):
 
 def _open(url):
     import subprocess
+    if sys.platform == 'win32':
+        os.startfile(url)
+        return
+    if catalog.WSL:
+        try:
+            subprocess.Popen(['rundll32.exe', 'url.dll,FileProtocolHandler', url])
+        except OSError:
+            pass  # The URL is also printed by serve().
+        return
     for app in ('Google Chrome', 'Chromium', 'Microsoft Edge', 'Brave Browser'):
         if os.path.isdir('/Applications/%s.app' % app):
             subprocess.Popen(['open', '-na', app, '--args', '--app=' + url, '--window-size=1400,900']); return

@@ -7,7 +7,7 @@ Formato (descoberto por engenharia reversa): 10 bytes de cabeçalho, depois regi
 Arquivos grandes vêm em blocos de 20 MB: o primeiro registro cria o arquivo, os seguintes
 (Append=On) acrescentam. Vários blocos de dados podem seguir um mesmo registro de metadados.
 """
-import os, re
+import os, posixpath, re
 
 class SwflError(Exception):
     pass
@@ -27,7 +27,7 @@ def parse_name(path):
     return m.groups() if m else None
 
 def norm_target(meta):
-    tp = os.path.normpath('/' + meta.get('TargetPath', '/').lstrip('/')).lstrip('/')
+    tp = posixpath.normpath('/' + meta.get('TargetPath', '/').lstrip('/')).lstrip('/')
     return tp
 
 def summarize(path):

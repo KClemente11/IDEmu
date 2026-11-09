@@ -577,6 +577,8 @@ window.IDE = window.IDE || {};
     ['Marcha à ré em baixa velocidade (<5 km/h) com esterçamento, depois P.', 'Reverse gear at low speed (<5 km/h) with steering, then P.'],
 
     /* ---- server.py, runtime.py, builder.py: fixed messages ---- */
+    ['Preparando discos', 'Preparing disks'],
+    ['Montando sistema de arquivos', 'Mounting the file system'],
     ['id inválido', 'Invalid ID'],
     ['ambiente não encontrado', 'Environment not found'],
     ['VIN deve ter 17 caracteres (sem I, O, Q)', 'The VIN must have 17 characters (no I, O, Q)'],
@@ -1208,6 +1210,12 @@ window.IDE = window.IDE || {};
     ['Dados adicionais do iDrive 8', 'Additional iDrive 8 data'],
     ['Arquivos do sistema (opcional)', 'System files (optional)'],
     ['Arquivos do sistema', 'System files'],
+    ['Verificar os arquivos do sistema necessários', 'Check required system files'],
+    ['ambiente NBT Evo esperado', 'expected an NBT Evo environment'],
+    ['Confirme os pacotes SWFL necessários em Arquivos do sistema antes de usar este ambiente.', 'Confirm the required SWFL packages in System Files before using this environment.'],
+    ['Esta geração do iDrive não está disponível neste sistema.', 'This iDrive generation is unavailable on this host.'],
+    ['Execução indisponível neste sistema', 'Runtime unavailable on this host'],
+    ['Use o iniciador WSL para executar a head unit no Windows.', 'Use the WSL launcher to run the head unit on Windows.'],
     ['arquivos do sistema', 'system files'],
     ['O emulador precisa destes arquivos SWFL. Procure cada um pelo nome, escolha vários de uma vez ou aponte uma pasta e o app acha sozinho. A PSdZData inteira também funciona.', 'The emulator needs these SWFL files. Look for each one by name, choose several at once, or point to a folder and the app finds them itself. The whole PSdZData also works.'],
     ['Se você já baixou os arquivos de software da BMW (SWFL), escolha-os um a um ou deixe o app procurar numa pasta. Dá para fazer isso depois, em "Pasta de arquivos…".', 'If you have already downloaded the BMW software files (SWFL), choose them one by one or let the app search a folder. You can do this later, under "Pasta de arquivos…".'],

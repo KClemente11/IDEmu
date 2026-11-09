@@ -84,7 +84,7 @@
     root.appendChild(page);
 
     const cards = new Map();
-    const sigOf = (e) => JSON.stringify([e.id, e.name, e.series, e.chassis, e.brand, e.model_name, e.coding, e.net, e.build.state, e.build.error, e.build.built_at, e.snapshot, e.fast_boot,
+    const sigOf = (e) => JSON.stringify([e.id, e.name, e.series, e.chassis, e.brand, e.model_name, e.coding, e.net, e.build.state, e.build.error, e.build.built_at, e.snapshot, e.fast_boot, e.files_ok, e.runtime_available,
       IDE.state.running === e.id, !!IDE.state.running, e.created]);
 
     function btn(cls, icon, label, fn, title) {
@@ -95,7 +95,7 @@
     function bootRow(e, running) {
       const sn = e.snapshot || {};
       const cb = h('input', { type: 'checkbox', checked: e.fast_boot !== false, disabled: running, 'aria-label': 'Fast boot', onchange: async () => { try { await post('/api/env/' + e.id + '/update', { fast_boot: cb.checked }); await IDE.refreshState(); } catch (er) { toastErr(er); } } });
-      const cold = h('button', { class: 'link', type: 'button', disabled: running || !!IDE.state.running, onclick: () => startEnv(e, null, true) }, 'Full boot');
+      const cold = h('button', { class: 'link', type: 'button', disabled: running || !!IDE.state.running || e.runtime_available === false, onclick: () => startEnv(e, null, true) }, 'Full boot');
       const del = sn.valid ? h('button', { class: 'link', type: 'button', disabled: running, onclick: async () => { try { await post('/api/env/' + e.id + '/snapshot/delete'); await IDE.refreshState(); } catch (er) { toastErr(er); } } }, 'Delete saved state') : null;
       return h('div', { class: 'env-boot' },
         h('label', { class: 'check' }, cb, h('span', null, 'Fast boot')),
@@ -113,14 +113,15 @@
         actions.push(btn('primary', 'play', 'Abrir execução', () => IDE.go('execucao')));
         actions.push(btn('danger-o', 'stop', 'Parar', (b) => stopEnv(e, b)));
       } else {
-        const canStart = bs === 'ready' && !otherRunning;
+        const canStart = bs === 'ready' && !otherRunning && e.runtime_available !== false;
         const b = btn('success', 'play', 'Iniciar', (b) => startEnv(e, b),
-          bs !== 'ready' ? 'Compile o ambiente antes de iniciar' : (otherRunning ? 'Outro ambiente está em execução' : 'Iniciar o emulador'));
+          e.runtime_available === false ? 'Runtime unavailable on this host' :
+            (bs !== 'ready' ? 'Compile o ambiente antes de iniciar' : (otherRunning ? 'Outro ambiente está em execução' : 'Iniciar o emulador')));
         b.disabled = !canStart;
         actions.push(b);
       }
       const bb = btn(bs === 'ready' || bs === 'error' ? '' : 'primary-o', 'wrench', bs === 'error' ? 'Tentar de novo' : (bs === 'ready' ? 'Recompilar' : 'Compilar'), (b) => buildEnv(e, b), 'Compilar (build) o ambiente');
-      bb.disabled = bs === 'building' || running;
+      bb.disabled = bs === 'building' || running || e.files_ok === false;
       actions.push(bb);
       const bc = btn('', 'gear', 'Coding', () => IDE.go('coding/' + e.id), 'Edit the coding of this head unit');
       bc.disabled = bs !== 'ready';
@@ -146,6 +147,8 @@
           e.home ? h('div', null, h('dt', null, 'Pasta da VM'), h('dd', { class: 'mono wrapany', title: e.home + '/' + e.id }, e.home + '/' + e.id)) : null),
         prog,
         bs === 'ready' ? bootRow(e, running) : null,
+        e.files_ok === false ? h('div', { class: 'note warn' }, ic('alert', 16),
+          h('button', { class: 'link', type: 'button', onclick: () => document.getElementById('files-folder').click() }, 'Check required system files')) : null,
         bs === 'error' && e.build.error ? h('div', { class: 'note danger' }, ic('alert', 16), h('span', null, e.build.error)) : null,
         h('footer', { class: 'env-actions' }, actions));
     }
@@ -234,7 +237,7 @@
       try { await post('/api/settings', { ui_language: langSel.value }); location.reload(); } catch (e) { toastErr(e); langSel.value = IDE.lang(); }
     });
     document.getElementById('files-folder').addEventListener('click', () => {
-      const m = IDE.modal({ title: 'Arquivos do sistema (opcional)', size: 'lg', body: IDE.filesSetup({ onSaved: () => { setTimeout(() => m.close(), 600); } }) });
+      IDE.modal({ title: 'System files', size: 'lg', body: IDE.filesSetup({ onChange: () => IDE.refreshState().catch(toastErr) }) });
     });
     document.getElementById('theme-btn').addEventListener('click', () => IDE.themePicker(false));
     route(); updateChrome();

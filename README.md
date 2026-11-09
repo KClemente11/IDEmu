@@ -31,6 +31,8 @@ system: the firmware packages do not carry map data and the navigation engine do
 
 ## Quick start
 
+For the experimental **Windows 11 + WSL2** iDrive 5/6 backend, see [Windows setup](docs/WINDOWS.md).
+
 ```bash
 ./IDEmu.command        # opens IDEmu in an Electron window (cd electron && npm install once); without Electron it opens your browser
 python3 -m idemu gui   # the same, web interface at http://127.0.0.1:8765

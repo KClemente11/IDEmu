@@ -167,12 +167,12 @@ carregados por `dev-dspipc`. O aplicativo principal é `/usr/HBproject/CicHighEc
 ```bash
 src/cic/build.sh                      # compila o qemu-system-sh4 (precisa do código-fonte do QEMU 11.1.2 em ~/id4-qemu)
 python3 tools/cic/run.py start        # sobe o CIC; o console QNX fica em /tmp/cic/ser1.sock e o log em /tmp/cic/ser1.log
-python3 tools/cic/con.py 'echo oi' 'pidin'
+python3 tools/cic/console.py 'echo oi' 'pidin'
 python3 tools/cic/run.py stop
 CIC_CMDS=comandos.sh python3 tools/cic/run.py start   # roda o arquivo no boot (no lugar do slogger) e depois dá o shell
 ```
 Para ver o starter da Harman trabalhando, o `comandos.sh` pode ter `slogger -s128 &` e `srv-starter-QNX -c /etc/starter.cfg -vvv -g -u &`;
-depois `python3 tools/cic/con.py 'sloginfo' 'pidin'`. (`CIC_STARTER=1` roda o starter no lugar do shell, sem console.)
+depois `python3 tools/cic/console.py 'sloginfo' 'pidin'`. (`CIC_STARTER=1` roda o starter no lugar do shell, sem console.)
 Variáveis de depuração do QEMU: `CIC_FPGA_INIT="off=val,..."` (valores iniciais do FPGA), `CIC_CATCHALL=1` (loga acessos a endereços sem dispositivo),
 `CIC_NOFPGA`, `CIC_NOCARMINE`.
 `tools/cic/` também tem: `ifsx.py` (extrai o IFS LZO), `dis.py` (desmontador SH-4A completo), `gdbc.py` e `trace_fault.py`/`trace_isr.py`

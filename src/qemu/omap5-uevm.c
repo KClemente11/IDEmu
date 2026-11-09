@@ -103,7 +103,7 @@ static void omap5_regs_write(void *opaque, hwaddr off, uint64_t val,
     Omap5Regs *r = opaque;
     if (r->trace) {
         fprintf(stderr, "OMAP5 W%u 0x%08" PRIx64 " <- 0x%08" PRIx64 "\n", size,
-                OMAP5_L4_BASE + off, val);
+                (uint64_t)(OMAP5_L4_BASE + off), val);
     }
     memcpy(r->store + off, &val, size);
 }
@@ -273,10 +273,10 @@ static void omap5_uevm_init(MachineState *machine)
         MemoryRegion *disk2 = g_new(MemoryRegion, 1);
         memory_region_init_ram(disk2, NULL, "omap5.sdb", 0x3f000000, &error_fatal);
         memory_region_add_subregion(sysmem, 0x01000000, disk2);
-        /* shim disk (IDEmu overlay: translation libs, boot scripts) 0x7e000000-0x80000000 */
+        /* Shim disk below sda; 0x7e000000 onward belongs to the GLES bridge. */
         MemoryRegion *disk3 = g_new(MemoryRegion, 1);
         memory_region_init_ram(disk3, NULL, "omap5.shim", 0x02000000, &error_fatal);
-        memory_region_add_subregion(sysmem, 0x7e000000, disk3);
+        memory_region_add_subregion(sysmem, 0x5e000000, disk3);
     }
 
     glb_init(sysmem);

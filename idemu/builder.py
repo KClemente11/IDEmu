@@ -75,6 +75,33 @@ def _walk_files(root):
             p = os.path.join(dp, f)
             yield os.path.relpath(p, root), p
 
+def _write_shader_index(root, destination):
+    """Map the shader payloads in the merged QNX6 tree to their material paths."""
+    names = {}
+    cursor = '/widgetasset/cursor/'
+
+    def scan(directory, prefix):
+        for name, node in sorted(directory.kids.items()):
+            path = prefix + '/' + name.decode('utf-8')
+            if node.kids is not None:
+                scan(node, path)
+            elif name.endswith(b'.shd'):
+                # Use the same FNV-1a hash as glhost.
+                shader_hash = 0x811c9dc5
+                with open(node.src, 'rb') as shader:
+                    for byte in shader.read():
+                        shader_hash = ((shader_hash ^ byte) * 0x01000193) & 0xffffffff
+                previous = names.get(shader_hash)
+                # Prefer the cursor name when the same shader is also used by a pad.
+                if previous is None or (cursor in path and cursor not in previous):
+                    names[shader_hash] = path
+
+    scan(root, '')
+    with open(destination + '.tmp', 'w', encoding='utf-8') as index:
+        for shader_hash, path in sorted(names.items()):
+            index.write(f'{shader_hash:08x} {path}\n')
+    os.replace(destination + '.tmp', destination)
+
 def build(env, env_dir, log=print, progress=lambda pct, step: None):
     _last = [None]
     _p = progress
@@ -113,7 +140,13 @@ def build(env, env_dir, log=print, progress=lambda pct, step: None):
         if not os.path.isfile(p): raise BuildError('ferramenta ausente no sistema: bin/' + n)
         tools.append((open(p, 'rb').read(), 'bin/' + n))
     tools.append((open(os.path.join(istep['os'], 'lib/fs-qnx4.so'), 'rb').read(), 'lib/fs-qnx4.so'))
-    open(os.path.join(img_dir, 'boot.ifs'), 'wb').write(ifs.make_boot_ifs(open(b1, 'rb').read(), tools))
+    with open(b1, 'rb') as source:
+        try:
+            boot_image = ifs.make_boot_ifs(source.read(), tools)
+        except ValueError as exc:
+            raise BuildError(f'Unsupported boot IFS in {os.path.basename(sw["os"])}: {exc}') from exc
+    with open(os.path.join(img_dir, 'boot.ifs'), 'wb') as output:
+        output.write(boot_image)
     log('boot.ifs ok')
     # 3) sda.img
     progress(28, 'Montando disco do sistema (QNX4)')
@@ -196,6 +229,7 @@ def build(env, env_dir, log=print, progress=lambda pct, step: None):
     manifest['hmi_validated'] = manifest['hmi_sha256'] in known.get('validated', [])
     if not manifest['hmi_validated']:
         log('AVISO: este HmiMain3D não é uma das versões validadas; os patches em memória do shim podem falhar.')
+    _write_shader_index(ro, os.path.join(img_dir, 'shader_index.txt'))
     manifest['images'] = {n: os.path.getsize(os.path.join(img_dir, n)) for n in ('boot.ifs', 'sda.img', 'sdb.img', 'shim.img')}
     manifest['seconds'] = round(time.time() - t0, 1)
     json.dump(manifest, open(os.path.join(env_dir, 'build.json'), 'w'), indent=1)

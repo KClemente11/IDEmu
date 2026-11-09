@@ -44,13 +44,25 @@ static char *gen_vs(ShInfo*v,ShInfo*f){ char *o=malloc(32768),*p=o; p+=sprintf(p
     if(fnd(v,"size_x",3)){ if(tc1) p+=sprintf(p," P.x+=size_x*%s.x;\n",tc1); else p+=sprintf(p," P.x*=size_x;\n"); }
     if(fnd(v,"size_z",3)){ if(tc1) p+=sprintf(p," P.%c+=size_z*%s.y;\n",SZAXIS,tc1); else p+=sprintf(p," P.%c*=size_z;\n",SZAXIS); } }
   if(fnd(v,"u_MVPMatrix",3)) p+=sprintf(p," gl_Position=u_MVPMatrix*P;\n"); else if(fnd(v,"u_MVMatrix",3)&&fnd(v,"u_PMatrix",3)) p+=sprintf(p," gl_Position=u_PMatrix*u_MVMatrix*P;\n"); else if(fnd(v,"u_MVMatrix",3)) p+=sprintf(p," gl_Position=u_MVMatrix*P;\n"); else p+=sprintf(p," gl_Position=P;\n");
+  Sym *nav = fnd(v,"nav",3);
+  const char *arrow_u = NULL;
+  if(nav && nav->type==2 && fnd(v,"a_TextureCoordinate",4)){
+    const char *material = shname(v->hash);
+    /* Both arrow shaders use nav, but only the tile-order one has a second UV set. */
+    if(strstr(material,"/controller_arrow/shaders/mat_arrow.vert.shd"))
+      arrow_u = "mix(1.0-a_TextureCoordinate.x,a_TextureCoordinate.x,nav)";
+    else if(fnd(v,"a_TextureCoordinate1",4) && strstr(material,"/pad/shaders/WI_HwShader18.vert.shd"))
+      arrow_u = "mix(a_TextureCoordinate.x,1.0-a_TextureCoordinate1.x,nav)";
+  }
   ShInfo *lists[2]={v,f}; char seen[256][64]; int ns=0;
   for(int L=0;L<2;L++){ ShInfo*o2=lists[L]; if(!o2) continue; for(int i=0;i<o2->n;i++){ Sym*s=&o2->s[i]; if(s->flag||s->cls!=(L==0?5:6)) continue;
     int dup=0; for(int k=0;k<ns;k++) if(!strcmp(seen[k],s->name)) dup=1; if(dup||ns>=256) continue; strcpy(seen[ns++],s->name); if(s->arr>1) continue;
     const char*n=gname(s->name); char u[80]; const char*bare=s->name; if(!strncmp(bare,"v_",2)) bare+=2;
     switch(s->type){
       case 3: { const char*a=NULL; int has1=strchr(s->name,'1')!=0; if(has1&&fnd(v,"a_TextureCoordinate1",4)) a="a_TextureCoordinate1"; else if(fnd(v,"a_TextureCoordinate",4)) a="a_TextureCoordinate"; else if(fnd(v,"a_TextureCoordinate1",4)) a="a_TextureCoordinate1";
-        if(a) p+=sprintf(p," %s=%s;\n",n,a); else p+=sprintf(p," %s=P.xy*0.5+0.5;\n",n); break; }
+        if(arrow_u && !strcmp(s->name,"uv"))
+          p+=sprintf(p," %s=vec2(%s,a_TextureCoordinate.y);\n",n,arrow_u);
+        else if(a) p+=sprintf(p," %s=%s;\n",n,a); else p+=sprintf(p," %s=P.xy*0.5+0.5;\n",n); break; }
       case 2: { Sym*un=fnd(v,bare,3); if(un&&un->type==2&&strcmp(bare,s->name)) p+=sprintf(p," %s=%s;\n",n,gname(bare)); else p+=sprintf(p," %s=1.0;\n",n); break; }
       case 4: { if(fnd(v,"a_Normal",4)&&(strstr(s->name,"ormal"))) p+=sprintf(p," %s=a_Normal;\n",n); else { const char*c1=0,*c2=0; for(int z=0;z<v->n;z++){ Sym*t=&v->s[z]; if(t->cls==3&&t->type==4&&!strncmp(t->name,"CO",2)){ if(!c1) c1=t->name; else if(!c2) c2=t->name; } }
           if(c1&&c2&&fnd(v,"a_Color",4)) p+=sprintf(p," %s=mix(%s,%s,a_Color.r);\n",n,gname(c1),gname(c2)); else if(c1) p+=sprintf(p," %s=%s;\n",n,gname(c1)); else p+=sprintf(p," %s=vec3(1.0);\n",n); } break; }

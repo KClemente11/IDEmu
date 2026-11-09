@@ -23,7 +23,10 @@
     const root = h('div', { class: 'pkg-panel' });
     let st = null, busy = false, last = null;
     const setSt = (s) => { st = s; root.status = s; if (o.onChange) o.onChange(s); render(); };
-    async function reload() { try { setSt(await api('/api/packages?' + IDE.qs({ kind }))); } catch (e) { toastErr(e); } }
+    async function reload() {
+      const query = o.env ? { kind, env: o.env } : { kind };
+      try { setSt(await api('/api/packages?' + IDE.qs(query))); } catch (e) { toastErr(e); }
+    }
     async function run(fn) { busy = true; render(); try { await fn(); } catch (e) { toastErr(e); } busy = false; render(); }
 
     function report(res, before) {
@@ -78,7 +81,7 @@
           it.found ? h('div', { class: 'got' }, ic('check', 14), h('span', { class: 'mono' }, IDE.fmtSize(it.size) + (it.source === 'escolhido' ? ' · ' + IDE.t('escolhido por você') : ''))) : null,
           it.found ? h('div', { class: 'why mono' }, it.path)
             : (it.other && it.other.length ? h('div', { class: 'note warn' }, ic('alert', 16), h('span', null, IDE.t('Achei outra versão ({name}), mas o IDEmu precisa da {ver}.', { name: it.other[0], ver: it.version }))) : h('div', { class: 'why' }, IDE.t(it.help)))),
-        h('div', { class: 'vers' },
+        o.readOnly ? null : h('div', { class: 'vers' },
           h('button', { class: 'btn', type: 'button', title: IDE.t('Copia o nome para colar na busca do Finder'), onclick: () => copyText(it.file) }, ic('copy', 16), IDE.t('Copiar nome')),
           h('button', { class: 'btn' + (it.found ? '' : ' primary-o'), type: 'button', disabled: busy, onclick: () => pickOne(it) }, ic('file', 16), it.found ? IDE.t('Trocar…') : IDE.t('Escolher…'))));
     }
@@ -90,8 +93,8 @@
       root.appendChild(h('div', { class: 'need-banner' + (ok ? ' ok' : '') },
         h('div', { class: 'ico-big' }, ic(ok ? 'check' : 'folder', 22)),
         h('div', { class: 'nb-t' }, h('b', null, ok ? IDE.t('Tudo certo: {n} de {total} arquivos', { n: st.have, total: st.total }) : IDE.t('{n} de {total} arquivos encontrados', { n: st.have, total: st.total })),
-          h('span', null, last && last.scan ? IDE.t('Última pasta: {path}', { path: last.scan }) : IDE.t('Copie o nome, procure no Finder e escolha o arquivo, ou deixe o app procurar numa pasta.'))),
-        h('div', { class: 'pkg-actions' },
+          h('span', null, o.readOnly ? (o.label || 'PSdZData') : last && last.scan ? IDE.t('Última pasta: {path}', { path: last.scan }) : IDE.t('Copie o nome, procure no Finder e escolha o arquivo, ou deixe o app procurar numa pasta.'))),
+        o.readOnly ? null : h('div', { class: 'pkg-actions' },
           h('button', { class: 'btn primary', type: 'button', disabled: busy, onclick: scan }, ic('folder', 16), busy ? IDE.t('Procurando…') : IDE.t('Procurar numa pasta…')),
           h('button', { class: 'btn', type: 'button', disabled: busy, onclick: pickMany }, ic('file', 16), IDE.t('Escolher vários arquivos…')))));
       root.appendChild(h('div', { class: 'need-list' }, st.items.slice().sort((a, b) => (a.found - b.found)).map(row)));
@@ -108,8 +111,13 @@
     function render() {
       IDE.clear(tabs); IDE.clear(holder);
       KINDS.concat([['psdz', 'iDrive 5/6 (PSdZData)']]).forEach(([id, label]) => tabs.appendChild(h('button', { type: 'button', class: 'fs-tab' + (tab === id ? ' on' : ''), onclick: () => { tab = id; IDE.pref.set('files.tab', id); render(); } }, label)));
-      if (tab === 'psdz') holder.appendChild(IDE.psdzForm({ onSaved: o.onSaved }));
-      else holder.appendChild(IDE.pkgPanel(tab, { onChange: o.onChange }));
+      if (tab === 'psdz') {
+        const evo = IDE.state.envs.filter((e) => !e.kind);
+        const env = evo.find((e) => e.id === IDE.state.running) || (evo.length === 1 ? evo[0] : null);
+        const panel = IDE.pkgPanel('evo', { readOnly: true, env: env && env.id, label: env && env.name });
+        holder.appendChild(panel);
+        holder.appendChild(IDE.psdzForm({ onSaved: () => panel.reload() }));
+      } else holder.appendChild(IDE.pkgPanel(tab, { onChange: o.onChange }));
     }
     render();
     return h('div', { class: 'files-setup' }, tabs, holder);

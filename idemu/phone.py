@@ -12,7 +12,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PAGE = os.path.join(ROOT, 'idemu', 'web', 'phone.html')
-CERT_DIR = os.path.join(ROOT, 'idemu', 'data', 'phone')
+CERT_DIR = os.path.join(os.environ.get('IDEMU_STATE_DIR') or os.path.join(ROOT, 'idemu', 'data'), 'phone')
 HTTP_PORT, HTTPS_PORT = 8766, 8767
 COOKIE = 'idemu_phone'
 MAX_FAILS, LOCK_S = 5, 60

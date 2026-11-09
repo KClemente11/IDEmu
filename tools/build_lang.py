@@ -5,6 +5,13 @@ Uso: python3 tools/build_lang.py <código> <pasta com src_N.json e out_<código>
 Cada src_N.json é uma lista de textos em inglês (dicionário e depois modelos de regras, na ordem de i18n.js) e cada
 out_<código>_N.json é a lista traduzida, na mesma ordem. Traduções que perdem ou mudam os marcadores ({nome}, %s, %t...) voltam para o inglês.
 """
+
+"""Builds idemu/web/lang/<code>.js from JSON translations.
+
+Usage: python3 tools/build_lang.py <code> <folder containing src_N.json and out_<code>_N.json files>
+Each src_N.json file contains a list of English texts (a dictionary followed by rule templates, in the same order as in i18n.js), and each
+corresponding out_<code>_N.json file contains the translated list, in the same order. Translations that lose or alter placeholders ({name}, %s, %t, etc.) will revert to English.
+"""
 import json, os, re, sys
 from collections import Counter
 

@@ -8,7 +8,7 @@ virtual ao servidor de blocos. Não é o motor de navegação da BMW: sem rotas,
 import os, queue, socket, threading, time, urllib.request
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CACHE = os.environ.get('IDEMU_MAPCACHE') or os.path.join(HERE, 'mapcache')
+CACHE = os.environ.get('IDEMU_MAPCACHE') or os.path.join(os.environ.get('IDEMU_STATE_DIR') or HERE, 'mapcache')
 SOURCES = {'osm': ('https://tile.openstreetmap.org/{z}/{x}/{y}.png', '(c) OpenStreetMap contributors')}
 USER_AGENT = 'IDEmu/0.1 (BMW iDrive emulator, map view)'
 RETRY_S = 60.0

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Sobe o CIC (iDrive 4) em segundo plano: console QNX no socket /tmp/cic/ser1.sock (SCIF1) e SCIF0 em arquivo.
-uso: run.py [start|stop]   — depois: con.py 'comando' ..."""
+uso: run.py [start|stop]   — depois: console.py 'comando' ..."""
 import os, subprocess, sys, time, signal
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bootinfo, efs

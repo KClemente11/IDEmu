@@ -218,7 +218,11 @@ class Idrive7ServerTest(CodingBase):
     def test_coding_info_works_for_idrive7_and_not_for_idrive4(self):
         a = server.App.__new__(server.App); a.rt = None; a.flashes = {}; a.builds = {}
         a.load_env = lambda eid: dict(self.env, kind=self.env_kind); a.env_dir = lambda eid: self.tmp.name
-        self.env_kind = 'mgu7'; d = a.coding_info('x'); self.assertGreater(len(d['params']), 0); self.assertFalse(d['running'])
+        from unittest.mock import patch
+        self.env_kind = 'mgu7'
+        with patch.object(server.catalog, 'packages_ok', return_value=True):
+            d = a.coding_info('x')
+        self.assertGreater(len(d['params']), 0); self.assertFalse(d['running'])
         self.env_kind = 'cic'
         with self.assertRaises(server.ApiError): a.coding_info('x')
 

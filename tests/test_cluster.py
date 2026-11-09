@@ -91,8 +91,10 @@ class VmHomeTest(unittest.TestCase):
         self.disk = os.path.join(self.tmp, 'disco externo'); os.makedirs(self.disk)
         self.app = server.App()
         self.body = {'name': 'Meu carro', 'series': 'F020', 'chassis': 'F30', 'brand': 'bmw', 'coding': {}, 'swfl': {}}
-        for r in ('os', 'brand', 'hmi'):
-            p = os.path.join(self.tmp, 'swfl_%s.bin' % r); open(p, 'w').close(); self.body['swfl'][r] = p
+        for role, sid in (('os', '0000271a'), ('brand', '00002719'), ('hmi', '00002720')):
+            p = os.path.join(self.tmp, 'swfl_%s.bin.007_051_002' % sid)
+            open(p, 'w').close()
+            self.body['swfl'][role] = p
     def tearDown(self): server.ENVS = self.old; shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_default_folder(self):

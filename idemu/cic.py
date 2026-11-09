@@ -6,13 +6,12 @@ frame.rgb (CIC_FRAME) e recebe rotor/teclas por um socket (CIC_INPUT). Detalhes 
 """
 import glob, importlib.util, json, os, shutil, socket, subprocess, threading, time
 from . import runtime
+from .catalog import CIC_VERSION as VERSION, CIC_PACKAGES as PKGS
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, 'cic')
 QEMU = os.path.join(ROOT, 'bin', 'qemu-system-sh4')
 DEV_QEMU = os.path.expanduser('~/id4-qemu/build/qemu-system-sh4')     # compilado por src/cic/build.sh
-VERSION = '008_090_002'
-PKGS = ('000003a6', '00000417')
 IMAGES = ('ifs.bin', 'flash.img', 'efs.ifs', 'build.json')
 
 

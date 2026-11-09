@@ -5,6 +5,7 @@ from . import mapsvc, catalog
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 BIN = os.path.join(ROOT, 'bin')
+SHIM_BASE = 0x5e000000  # Keep in sync with src/qemu/omap5-uevm.c.
 
 KEYS = {'MENU': 1, 'BACK': 2, 'OPTION': 3, 'CD': 4, 'RADIO': 5, 'TEL': 6, 'NAV': 7, 'PRESS': 8,
         'N': 9, 'S': 10, 'W': 11, 'E': 12, 'RIGHT': 13, 'LEFT': 14}
@@ -109,11 +110,19 @@ class Runtime:
 
     # ---------- ciclo de vida ----------
     # ---------- boot rápido (snapshot) ----------
+    def _shader_index_path(self):
+        installed = os.path.join(BIN, 'shader_index.txt')
+        return installed if os.path.isfile(installed) else os.path.join(self.img, 'shader_index.txt')
+
     def snapshot_key(self):
         """Muda quando qualquer coisa que o snapshot embute muda: imagens (inclusive shim.img, onde fica a codificação), binários, CPU."""
         parts = [SNAP_FORMAT, CPU, SETBITS, os.environ.get('IDEMU_CPU'), os.environ.get('IDEMU_QEMU_EXTRA')]
         for p in [os.path.join(self.img, n) for n in ('boot.ifs', 'sda.img', 'sdb.img', 'shim.img')] + [os.path.join(BIN, 'qemu-system-arm'), os.path.join(BIN, 'glhost'), os.path.join(HERE, 'data', 'stub.bin')]:
             st = os.stat(p); parts.append((os.path.basename(p), st.st_size, int(st.st_mtime)))
+        index = self._shader_index_path()
+        if os.path.isfile(index):
+            with open(index, 'rb') as f:
+                parts.append(hashlib.sha256(f.read()).hexdigest())
         return hashlib.sha256(repr(parts).encode()).hexdigest()
 
     def snapshot_valid(self):
@@ -156,10 +165,18 @@ class Runtime:
     def _launch(self, resume=False, record=False):
         """Sobe renderizador e QEMU; devolve os caminhos dos sockets seriais."""
         B = BIN + '/'; R = self.run + '/'
+        if catalog.WSL:
+            if not os.environ.get('DISPLAY'):
+                raise RuntimeError('The iDrive 5/6 renderer needs WSLg with an X11 display.')
+            for name in ('glhost', 'qemu-system-arm'):
+                if not os.access(B + name, os.X_OK):
+                    raise RuntimeError(f'Missing {name}. Build the iDrive 5/6 backend as described in docs/WINDOWS.md.')
         gls, ser, ser2, ser1, ser4 = R + 'gl.sock', R + 'ser.sock', R + 'ser2.sock', R + 'ser1.sock', R + 'ser4.sock'
-        env = dict(os.environ, GLHOST_SOCK=gls, OMAP5_GLSOCK=gls, GLHOST_SHIDX=B + 'shader_index.txt',
+        env = dict(os.environ, GLHOST_SOCK=gls, OMAP5_GLSOCK=gls, GLHOST_SHIDX=self._shader_index_path(),
                    GLHOST_GLSLDIR=B + 'glsl', GLHOST_MAPCACHE=mapsvc.CACHE, GLHOST_CTL=self.ctl, GLHOST_FRAME=self.frame_path,
                    OMAP5_SETBITS=SETBITS)
+        if catalog.WSL and os.path.isdir(B + 'lib'):
+            env['LD_LIBRARY_PATH'] = os.pathsep.join(filter(None, (B + 'lib', env.get('LD_LIBRARY_PATH'))))
         if self.env.get('show_window'): env['GLHOST_SHOW'] = '1'
         S = self.snap_dir + '/'
         if resume: env['GLHOST_REPLAY'] = S + 'gl.rec'
@@ -183,7 +200,7 @@ class Runtime:
                      '-device', 'loader,addr=0xbff00000,cpu-num=0',
                      '-device', 'loader,file=%ssda.img,addr=0x60000000' % I,
                      '-device', 'loader,file=%ssdb.img,addr=0x01000000' % I,
-                     '-device', 'loader,file=%sshim.img,addr=0x7e000000' % I]
+                     '-device', 'loader,file=%sshim.img,addr=%#x' % (I, SHIM_BASE)]
         args += shlex.split(os.environ.get('IDEMU_QEMU_EXTRA', ''))
         self.step = 'Iniciando QEMU'; self.pct = 5
         self.q = subprocess.Popen(args, env=env, stdout=self._log('qemu.log'), stderr=subprocess.STDOUT)
@@ -273,7 +290,7 @@ class Runtime:
         seq = [('export PATH=/bin:/boot/bin LD_LIBRARY_PATH=/boot/lib:/lib', 10, 'Preparando discos', 12),
                ('devb-ram disk name=sda ram address=0x60000000,capacity=983040,nodinit blk cache=32m', 10, None, 14),
                ('devb-ram disk name=sdb ram address=0x01000000,capacity=2064384,nodinit blk cache=32m', 10, None, 16),
-               ('devb-ram disk name=sdc ram address=0x7e000000,capacity=65536,nodinit blk cache=1m', 10, None, 18),
+               (f'devb-ram disk name=sdc ram address={SHIM_BASE:#x},capacity=65536,nodinit blk cache=1m', 10, None, 18),
                ('waitfor /dev/sda0t77 20; waitfor /dev/sdb0 20; waitfor /dev/sdc0t77 20', 60, None, 20),
                ('mount -t qnx4 /dev/sda0t77 /fs/sda0', 30, 'Montando sistema de arquivos', 22),
                ('mount -t qnx6 -r /dev/sdb0 /fs/sdb0', 30, None, 24),

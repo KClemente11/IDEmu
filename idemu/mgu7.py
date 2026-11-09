@@ -2,15 +2,14 @@
 O HMI do banco traseiro (HmiMain3D, RSE_HIGH_LEFT) desenha pela ponte GL (ttyS1) e recebe toque pela serial ttyS0 (idemu-wl -> wl_pointer). Detalhes em docs/OUTRAS_GERACOES.md (parte 6)."""
 import glob, mmap, os, re, shutil, socket, struct, subprocess, sys, threading, time, zlib
 from . import runtime, coding7
+from .catalog import (MGU7_APP_IDS as APP_IDS, MGU7_DATA_IDS as DATA_IDS, MGU7_APP_VER as APP_VER,
+                      MGU7_KERNEL_PKG as KERNEL_PKG, MGU7_KERNEL_VER as KERNEL_VER)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOOLS = os.path.join(ROOT, 'tools', 'mgu')
 GUEST = os.path.join(ROOT, 'idemu', 'guest7')
 OUT = os.path.join(ROOT, 'mgu7')
-APP_IDS = '566c 566d 566e 566f 5670 5671 5672 5673 5675 5678 567a'.split()
-DATA_IDS = '566b 567b 567c 567d 567e 5682 5683'.split()
-KERNEL_PKG = '00005684'; KERNEL_VER = '036_010_004'; KERNEL_SKIP = 480        # /ias_rsu = 480 B de cabeçalho + bzImage
-APP_VER = '030_016_002'                                                       # os offsets de patch_rse.py valem para esta versão
+KERNEL_SKIP = 480        # /ias_rsu = 480 B de cabeçalho + bzImage
 IMG_MB = 4096
 # serviços SOME/IP do head unit que o HU_HMI espera (tools/mgu/gen_fakesvc.py -> /etc/idemu/fakesvc.tab; campo=hex troca o valor padrão)
 FAKE_SERVICES = ['Lifecycle=powerStateDetailed=63,powerStateDetailedExternal=63ffffffff7fffffffffff,rseLock=03', 'Key', 'VehicleCondition',

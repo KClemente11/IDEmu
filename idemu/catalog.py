@@ -1,8 +1,11 @@
 """Catálogo do PSDZData: séries, chassis, pacotes SWFL necessários e versões disponíveis."""
-import os, re, json, glob
+import os, re, json, glob, sys
 from . import codegen
 
-SETTINGS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'settings.json')
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+STATE_DIR = os.path.abspath(os.environ.get('IDEMU_STATE_DIR') or ROOT_DIR)
+SETTINGS = os.path.join(STATE_DIR, 'settings.json')
+WSL = bool(os.environ.get('IDEMU_WSL'))
 
 def load_settings():
     try: return json.load(open(SETTINGS))
@@ -96,6 +99,14 @@ GENERATIONS = [
     {'id': 'id8', 'name': 'iDrive 8', 'sub': 'MGU22 · Linux ARM64 · BMW i7 G70 · lê os arquivos direto da PSdZData', 'hmi_version': 'id8', 'supported': True, 'direct': 'mgu22'},
 ]
 for _g in GENERATIONS: _g['level'] = level_of(_g['id'])
+DIRECT_BACKENDS = {'cic': 'cic', 'mgu7': 'mgu7', 'mgu22': 'mgu'}
+
+def backend_supported(kind):
+    return kind is None or (kind in DIRECT_BACKENDS and not WSL and sys.platform != 'win32')
+
+if WSL or sys.platform == 'win32':
+    for _g in GENERATIONS:
+        if _g.get('direct'): _g['supported'] = False
 
 def scan_folder(root, wanted, max_depth=7, max_seconds=25):
     # Procura em root arquivos swfl_<id>.bin.<versão> (ids em wanted): raiz do psdzdata, pasta swe/swfl ou qualquer pasta que os contenha.
@@ -160,21 +171,26 @@ def build_catalog(psdz):
 # ---------------------------------------------------------------- pacotes SWFL exigidos por geração (iDrive 4, 7 e 8)
 # O usuário pode apontar a PSdZData inteira, escolher os arquivos um a um ou mandar o app procurar numa pasta.
 # Os arquivos escolhidos ficam como links em packages/swe/swfl (o "estágio"), que tem o mesmo formato de uma PSdZData para os montadores.
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-STAGE = os.path.join(ROOT_DIR, 'packages')
+STAGE = os.path.join(STATE_DIR, 'packages')
 MGU22_VER = '007_034_003'
+CIC_VERSION = '008_090_002'
+CIC_PACKAGES = ('000003a6', '00000417')
+MGU7_APP_IDS = '566c 566d 566e 566f 5670 5671 5672 5673 5675 5678 567a'.split()
+MGU7_DATA_IDS = '566b 567b 567c 567d 567e 5682 5683'.split()
+MGU7_APP_VER = '030_016_002'
+MGU7_KERNEL_PKG = '00005684'
+MGU7_KERNEL_VER = '036_010_004'
 SWFL_RX = re.compile(r'^swfl_([0-9a-fA-F]{8})\.bin\.(\d{3}_\d{3}_\d{3})$')
 
 def required_packages(kind):
     # [{id, version, label, help, role}] dos pacotes que a geração precisa
-    from . import cic, mgu7
     if kind == 'cic':
         lab = {'000003a6': ('Sistema do CIC (aplicativos e HMI)', 'os'), '00000417': ('Dados do CIC (mapas, vozes e recursos)', 'data')}
-        return [{'id': i, 'version': cic.VERSION, 'label': lab[i][0], 'role': lab[i][1], 'help': 'Pacote do iDrive 4 (CIC)'} for i in cic.PKGS]
+        return [{'id': i, 'version': CIC_VERSION, 'label': lab[i][0], 'role': lab[i][1], 'help': 'Pacote do iDrive 4 (CIC)'} for i in CIC_PACKAGES]
     if kind == 'mgu7':
-        out = [{'id': '0000' + i, 'version': mgu7.APP_VER, 'label': 'Aplicativo %s' % i.upper(), 'role': 'app', 'help': 'Sistema e aplicativos do iDrive 7'} for i in mgu7.APP_IDS]
-        out += [{'id': '0000' + i, 'version': mgu7.APP_VER, 'label': 'Dados %s' % i.upper(), 'role': 'data', 'help': 'Dados e recursos do iDrive 7'} for i in mgu7.DATA_IDS]
-        out.append({'id': mgu7.KERNEL_PKG, 'version': mgu7.KERNEL_VER, 'label': 'Kernel do Linux', 'role': 'kernel', 'help': 'Núcleo do sistema do iDrive 7'})
+        out = [{'id': '0000' + i, 'version': MGU7_APP_VER, 'label': 'Aplicativo %s' % i.upper(), 'role': 'app', 'help': 'Sistema e aplicativos do iDrive 7'} for i in MGU7_APP_IDS]
+        out += [{'id': '0000' + i, 'version': MGU7_APP_VER, 'label': 'Dados %s' % i.upper(), 'role': 'data', 'help': 'Dados e recursos do iDrive 7'} for i in MGU7_DATA_IDS]
+        out.append({'id': MGU7_KERNEL_PKG, 'version': MGU7_KERNEL_VER, 'label': 'Kernel do Linux', 'role': 'kernel', 'help': 'Núcleo do sistema do iDrive 7'})
         return out
     if kind == 'mgu22':
         return [{'id': '00009ff7', 'version': MGU22_VER, 'label': 'Kernel e sistema base', 'role': 'kernel', 'help': 'Imagem de boot e raiz do iDrive 8', 'approx_mb': 0},
@@ -197,7 +213,7 @@ def package_status(kind, psdz=None):
         name = 'swfl_%s.bin.%s' % (r['id'], r['version']); it = dict(r, file=name, found=False, path=None, size=0, source=None, other=[])
         for d in _search_dirs(kind, psdz):
             f = os.path.join(d, name)
-            if os.path.exists(f):
+            if os.path.isfile(f):
                 it.update(found=True, path=os.path.realpath(f), size=os.path.getsize(f), source='psdz' if d != os.path.join(STAGE, 'swe', 'swfl') else 'escolhido'); break
         if not it['found']:
             for d in _search_dirs(kind, psdz):
@@ -206,6 +222,29 @@ def package_status(kind, psdz=None):
     return {'kind': kind, 'ok': bool(items) and all(i['found'] for i in items), 'items': items, 'have': sum(1 for i in items if i['found']), 'total': len(items)}
 
 def packages_ok(kind): return package_status(kind)['ok']
+
+def evo_package_status(swfl=None, brand='bmw'):
+    """Check an Evo profile's selected files, or discover files in the configured folder."""
+    dirs = _search_dirs('evo', load_settings().get('psdz_path')) if swfl is None else ()
+    items = []
+    for role, sid in (('os', OS_SWFL), ('brand', BRAND_SWFL.get(brand)), ('hmi', HMI_SWFL)):
+        label, help_ = ROLE_TEXT[role]
+        pattern = f'swfl_{sid}.bin.*' if sid else 'swfl_*.bin.*'
+        candidates = [swfl.get(role)] if swfl is not None else sorted(
+            (path for folder in dirs for path in glob.glob(os.path.join(folder, pattern))),
+            key=os.path.basename, reverse=True)
+        item = dict(role=role, id=sid, label=label, help=help_, file=pattern,
+                    found=False, path=None, size=0, source=None, other=[])
+        for path in candidates:
+            if not isinstance(path, str) or not os.path.isfile(path): continue
+            name = os.path.basename(path)
+            match = SWFL_RX.fullmatch(name)
+            if match and match[1].lower() == sid:
+                item.update(found=True, file=name, path=os.path.realpath(path), size=os.path.getsize(path))
+                break
+        items.append(item)
+    have = sum(item['found'] for item in items)
+    return {'kind': 'evo', 'ok': have == len(items), 'items': items, 'have': have, 'total': len(items)}
 
 def stage_file(path, kind):
     # liga um arquivo escolhido no estágio; devolve (ok, mensagem). O nome precisa ser o de um pacote exigido
