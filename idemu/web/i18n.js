@@ -577,6 +577,7 @@ window.IDE = window.IDE || {};
     ['Marcha à ré em baixa velocidade (<5 km/h) com esterçamento, depois P.', 'Reverse gear at low speed (<5 km/h) with steering, then P.'],
 
     /* ---- server.py, runtime.py, builder.py: fixed messages ---- */
+    ['arquivos', 'files'],
     ['Preparando discos', 'Preparing disks'],
     ['Montando sistema de arquivos', 'Mounting the file system'],
     ['id inválido', 'Invalid ID'],

@@ -45,7 +45,7 @@ def stage_wsl_payload(destination):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--backend', choices=('wsl', 'native-prep', 'native'), default='wsl',
-                        help='package the WSL2 runtime, the native firmware builder, or the native iDrive 6 runtime')
+                        help='package the WSL2 runtime, the native firmware builder, or the native iDrive 4 and 6 runtime')
     parser.add_argument('--output-dir', type=Path, default=ROOT / 'dist')
     args = parser.parse_args()
     if sys.platform != 'win32' or platform.machine().upper() not in ('AMD64', 'X86_64'):
@@ -62,6 +62,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='idemu-exe-') as temp_dir:
         work = Path(temp_dir)
         command = [sys.executable, '-m', 'PyInstaller', '--onedir', '--name', name,
+                   '--icon', str(ROOT / 'installer' / 'icon.ico'),
                    '--paths', str(ROOT), '--distpath', str(work / 'dist'),
                    '--workpath', str(work / 'build'), '--specpath', str(work)]
         if args.backend == 'wsl':
@@ -81,9 +82,16 @@ def main():
             template = ROOT / 'idemu' / 'qnxfs' / 'q6_template.img.z'
             command += ['--add-data', f'{template}:idemu/qnxfs']
             if args.backend == 'native':
-                command += ['--hidden-import', 'idemu.runtime']
+                command += ['--hidden-import', 'idemu.runtime', '--hidden-import', 'idemu.cic',
+                            '--hidden-import', 'idemu.qnxfs.lzo', '--hidden-import', 'tarfile']
+                cic_tools = work / 'cic'
+                cic_tools.mkdir()
+                for name_required in ('run.py', 'bootinfo.py', 'efs.py', 'hmiinput.py', 'ifsx.py', 'mkimagefs.py', 'ffs3.py'):
+                    shutil.copy2(ROOT / 'tools' / 'cic' / name_required, cic_tools)
+                command += ['--add-data', f'{cic_tools}:tools/cic']
                 native = ROOT / 'bin' / 'windows'
-                for name_required in ('qemu-system-arm.exe', 'glhost.exe'):
+                native_executables = ('qemu-system-arm.exe', 'qemu-system-sh4.exe', 'glhost.exe')
+                for name_required in native_executables:
                     exe = native / name_required
                     if not exe.is_file():
                         parser.error(f'Missing {exe}. Build the native helpers first.')
@@ -91,7 +99,7 @@ def main():
                         if source.read(2) != b'MZ':
                             parser.error(f'{exe} is not a Windows executable.')
                 for file in sorted(native.iterdir()):
-                    if file.name in ('qemu-system-arm.exe', 'glhost.exe') or file.suffix.lower() == '.dll':
+                    if file.name in native_executables or file.suffix.lower() == '.dll':
                         command += ['--add-data', f'{file}:bin/windows']
         command.append(str(ROOT / 'tools' / 'windows_exe.py'))
         subprocess.run(command, cwd=ROOT, check=True)

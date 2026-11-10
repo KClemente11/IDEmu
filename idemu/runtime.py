@@ -565,7 +565,15 @@ class Runtime:
             if self.stop_ev.is_set(): raise BootStopped()
             if self.native:
                 kw.setdefault('creationflags', subprocess.CREATE_NO_WINDOW)
-            p = subprocess.Popen(*a, **kw); setattr(self, attr, p)
+            out = kw.get('stdout')
+            try:
+                p = subprocess.Popen(*a, **kw)
+            finally:
+                if hasattr(out, 'close'): out.close()      # o filho tem a própria cópia do log; no Windows a nossa trancaria o arquivo
+            if self.native:
+                from . import winproc
+                winproc.contain(p)                          # QEMU e renderizador morrem junto com o IDEmu, mesmo se a janela for fechada
+            setattr(self, attr, p)
             return p
 
     def _check_qemu(self):
@@ -598,7 +606,11 @@ class Runtime:
             except Exception:
                 try: p.kill()
                 except Exception: pass
-        self.q = self.gl = None; self._fm = None
+        self.q = self.gl = None
+        fm, self._fm = self._fm, None
+        if fm:
+            try: fm.close()                                # libera frame.rgb (no Windows o mapeamento tranca o arquivo)
+            except Exception: pass
 
     # ---------- status ----------
     def status(self):
@@ -616,6 +628,7 @@ class Runtime:
 
     # ---------- quadro de vídeo ----------
     def _map(self):
+        if self.stop_ev.is_set() or self.state in ('stopped', 'error'): return None      # parado: não volta a mapear (e trancar) o frame.rgb
         if self._fm is None:
             try:
                 with open(self.frame_path, 'rb') as f:

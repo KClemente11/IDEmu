@@ -5,7 +5,11 @@ set -eu
 archive=${1:?Usage: sh tools/qemu/build-evo.sh /path/to/qemu-11.1.2.tar.xz}
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 checksum=731b5681e4bb18be313231579b8efd0296c5b015fa36dc533874b639ba838016
-printf '%s  %s\n' "$checksum" "$archive" | sha256sum -c -
+if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s  %s\n' "$checksum" "$archive" | sha256sum -c -
+else
+    printf '%s  %s\n' "$checksum" "$archive" | shasum -a 256 -c -
+fi
 
 build=$(mktemp -d)
 echo "Building in $build"

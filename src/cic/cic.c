@@ -29,9 +29,14 @@
 #include "hw/core/qdev-properties.h"
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
+#include "qemu/sockets.h"
 #include "qemu/thread.h"
-#include <sys/socket.h>
+#include "qemu/timer.h"
+#ifdef _WIN32
+#include <glib/gstdio.h>
+#else
 #include <sys/un.h>
+#endif
 #include "cic.h"
 
 #define RAM_BASE   0x08000000
@@ -184,7 +189,12 @@ static unsigned telq_r, telq_w;
 static QemuMutex tel_lock;
 static uint32_t hc_this, hc_buf;
 static int in_fd = -1, out_fd = -1;
+#ifdef _WIN32
+static struct sockaddr_in out_addr;
+static QEMUTimer *input_timer;
+#else
 static struct sockaddr_un out_addr;
+#endif
 static uint8_t tx_buf[TEL_MAX];
 static unsigned tx_len;
 static bool in_dbg;
@@ -225,18 +235,33 @@ static void cic_input_line(char *s)
     }
 }
 
-static void cic_input_read(void *opaque)
+static bool cic_input_receive(void)
 {
     char b[4096], *save = NULL;
     ssize_t n = recv(in_fd, b, sizeof(b) - 1, 0);
     if (n <= 0) {
-        return;
+        return false;
     }
     b[n] = 0;
     for (char *l = strtok_r(b, "\r\n", &save); l; l = strtok_r(NULL, "\r\n", &save)) {
         cic_input_line(l);
     }
+    return true;
 }
+
+#ifdef _WIN32
+static void cic_input_poll(void *opaque)
+{
+    for (unsigned i = 0; i < 32 && cic_input_receive(); i++) {
+    }
+    timer_mod(input_timer, qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + 10);
+}
+#else
+static void cic_input_read(void *opaque)
+{
+    cic_input_receive();
+}
+#endif
 
 /* telegrama que o HMI mandou ao FBlock 0xE5: vai como "x <hex>" para o socket CIC_OUTPUT (do IDEmu), se existir */
 static void cic_output_tel(void)
@@ -249,8 +274,12 @@ static void cic_output_tel(void)
     if (in_dbg) {
         fprintf(stderr, "cic: HMI enviou ao controlador: %s\n", line + 2);
     }
-    if (out_fd >= 0 && out_addr.sun_path[0]) {
+    if (out_fd >= 0) {
+#ifdef _WIN32
+        sendto(out_fd, line, n, 0, (struct sockaddr *)&out_addr, sizeof(out_addr));
+#else
         sendto(out_fd, line, n, MSG_DONTWAIT, (struct sockaddr *)&out_addr, sizeof(out_addr));
+#endif
     }
 }
 
@@ -312,12 +341,71 @@ static bool cic_hypercall(CPUSH4State *env)
     return true;
 }
 
+#ifdef _WIN32
+static int cic_udp_socket(void)
+{
+    int fd = qemu_socket(AF_INET, SOCK_DGRAM, 0);
+    u_long nonblock = 1;
+    if (fd >= 0 && ioctlsocket(fd, FIONBIO, &nonblock) != 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+#endif
+
 static void cic_input_init(void)
 {
-    const char *path = getenv("CIC_INPUT");
+    const char *path = g_getenv("CIC_INPUT");
     qemu_mutex_init(&tel_lock);
     in_dbg = getenv("CIC_INPUT_DEBUG") != NULL;
     sh4_cic_hypercall = cic_hypercall;
+#ifdef _WIN32
+    const char *op = g_getenv("CIC_OUTPUT");
+    if (op && *op) {
+        char *end;
+        unsigned long port = strtoul(op, &end, 10);
+        if (!*end && port > 0 && port <= UINT16_MAX) {
+            out_addr.sin_family = AF_INET;
+            out_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            out_addr.sin_port = htons(port);
+            out_fd = cic_udp_socket();
+        }
+    }
+    if (!path || !*path) {
+        return;
+    }
+    struct sockaddr_in sa = {
+        .sin_family = AF_INET,
+        .sin_addr.s_addr = htonl(INADDR_LOOPBACK),
+    };
+    socklen_t addrlen = sizeof(sa);
+    in_fd = cic_udp_socket();
+    if (in_fd < 0 || bind(in_fd, (struct sockaddr *)&sa, sizeof(sa)) < 0 ||
+        getsockname(in_fd, (struct sockaddr *)&sa, &addrlen) < 0) {
+        error_report("cic: could not bind the controller socket");
+        goto fail;
+    }
+    FILE *endpoint = g_fopen(path, "w");
+    if (!endpoint) {
+        error_report("cic: could not open controller endpoint file %s", path);
+        goto fail;
+    }
+    fprintf(endpoint, "%u\n", (unsigned)ntohs(sa.sin_port));
+    if (fclose(endpoint) != 0) {
+        error_report("cic: could not publish controller endpoint %s", path);
+        goto fail;
+    }
+    input_timer = timer_new_ms(QEMU_CLOCK_REALTIME, cic_input_poll, NULL);
+    timer_mod(input_timer, qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + 10);
+    return;
+
+fail:
+    if (in_fd >= 0) {
+        close(in_fd);
+        in_fd = -1;
+    }
+#else
     {
         const char *op = getenv("CIC_OUTPUT");
         if (op && *op && strlen(op) < sizeof(out_addr.sun_path)) {
@@ -347,6 +435,7 @@ static void cic_input_init(void)
     }
     fcntl(in_fd, F_SETFL, fcntl(in_fd, F_GETFL) | O_NONBLOCK);
     qemu_set_fd_handler(in_fd, cic_input_read, NULL, NULL);
+#endif
 }
 
 /* ------------------------------------------------------------------ máquina */

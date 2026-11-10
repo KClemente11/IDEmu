@@ -1,2 +1,5 @@
 *.sh text eol=lf
 *.patch text eol=lf
+*.command text eol=lf
+tools/mgu/c.py text eol=lf
+tools/mgu/rse_overlay/idemu-tty text eol=lf

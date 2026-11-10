@@ -3,7 +3,9 @@
  * FPGA Xilinx da Harman (10EE:7534) e Fujitsu Carmine (10CF:202B), no início só como memória/registradores simples.
  */
 #include "qemu/osdep.h"
+#ifndef _WIN32
 #include <sys/mman.h>
+#endif
 #include "cpu.h"
 #include "ui/console.h"
 #include "system/runstate.h"
@@ -691,11 +693,35 @@ static void carmine_frame_tick(void *o)
 
 static void carmine_frame_init(CicPciMem *s)
 {
-    const char *path = getenv("CIC_FRAME");
+    const char *path = g_getenv("CIC_FRAME");
     if (!path || !*path) {
         return;
     }
     size_t sz = 32 + (size_t)CFB_W * CFB_H * 3;
+#ifdef _WIN32
+    g_autofree gunichar2 *wide_path = g_utf8_to_utf16(path, -1, NULL, NULL, NULL);
+    if (!wide_path) {
+        error_report("cic: invalid frame path %s", path);
+        return;
+    }
+    HANDLE file = CreateFileW(wide_path, GENERIC_READ | GENERIC_WRITE,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                              NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) {
+        error_report("cic: could not create %s (error %lu)", path, GetLastError());
+        return;
+    }
+    HANDLE mapping = CreateFileMappingW(file, NULL, PAGE_READWRITE, 0, sz, NULL);
+    CloseHandle(file);
+    if (mapping) {
+        frame_map = MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, sz);
+        CloseHandle(mapping);
+    }
+    if (!frame_map) {
+        error_report("cic: could not map frame file %s", path);
+        return;
+    }
+#else
     int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
     if (fd < 0 || ftruncate(fd, sz) != 0) {
         error_report("cic: não consegui criar %s", path);
@@ -710,6 +736,7 @@ static void carmine_frame_init(CicPciMem *s)
         frame_map = NULL;
         return;
     }
+#endif
     frame_timer = timer_new_ms(QEMU_CLOCK_REALTIME, carmine_frame_tick, s);
     timer_mod(frame_timer, qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + 100);
 }

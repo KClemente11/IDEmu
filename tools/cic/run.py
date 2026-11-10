@@ -165,7 +165,8 @@ def prepare(D, pkg=None, log=print):
         os.environ['CIC_EFS_FLASH'] = D + '/efs.ifs'
         ifs2 = '/tmp/memifs2 -q -L -C 8 -D -o 0x00740000 / &\nwaitfor /usr/HBproject/CicHighEceUsaSecond 90\n' if os.environ.get('CIC_IFS2', '0') == '1' else ''
         ionet = '(waitfor /etc/IFS2Ready 600; io-net -ptcpip-v4 forward; waitfor /dev/socket 30; ifconfig lo0 127.0.0.1) &\n' if os.environ.get('CIC_IONET', '1') == '1' else ''
-        open(D + '/boot.sh', 'w').write(FULL_BOOT.replace('@IFS2@', ifs2).replace('@IONET@', ionet))
+        with open(D + '/boot.sh', 'w', encoding='utf-8', newline='\n') as boot:
+            boot.write(FULL_BOOT.replace('@IFS2@', ifs2).replace('@IONET@', ionet))
         cmds = D + '/boot.sh'
     if cmds:
         files.append((open(cmds, 'rb').read(), 'etc/hosts', 'c'))
@@ -177,7 +178,7 @@ def prepare(D, pkg=None, log=print):
         log('flash NOR de 128 MB')
         build_flash(D + '/flash.img')
 
-def qemu_cmd(D, run=None, qemu=None, debug_log=None, flash=None):
+def qemu_cmd(D, run=None, qemu=None, debug_log=None, flash=None, windows_logs=None):
     """Linha de comando do QEMU para as imagens em D; sockets e logs vão para run (padrão: D).
     debug_log: flags do -d (None = CIC_D ou 'guest_errors,unimp'; '' = sem log, bem mais rápido).
     flash: cópia gravável da flash.img para esta execução (sem ela usa D/flash.img com snapshot=on, que grava num qcow2 temporário)."""
@@ -186,10 +187,16 @@ def qemu_cmd(D, run=None, qemu=None, debug_log=None, flash=None):
         try: os.remove(os.path.join(run, f))
         except OSError: pass
     dl = os.environ.get('CIC_D', 'guest_errors,unimp') if debug_log is None else debug_log
-    cmd = [qemu or QEMU, '-M', 'cic', '-m', os.environ.get('CIC_RAM', '384'), '-display', os.environ.get('CIC_DISPLAY', 'none'), '-monitor', 'unix:%s/mon.sock,server,nowait' % run,
-           '-serial', 'file:%s/ser0.txt' % run, '-chardev', 'socket,id=s1,path=%s/ser1.sock,server=on,wait=off,logfile=%s/ser1.log' % (run, run), '-serial', 'chardev:s1']
+    cmd = [qemu or QEMU, '-M', 'cic', '-m', os.environ.get('CIC_RAM', '384')]
+    if windows_logs is not None:
+        cmd += ['-display', 'none', '-monitor', 'none',
+                '-serial', 'file:' + os.path.join(windows_logs, 'renderer.log'),
+                '-serial', 'file:' + os.path.join(windows_logs, 'console.log')]
+    else:
+        cmd += ['-display', os.environ.get('CIC_DISPLAY', 'none'), '-monitor', 'unix:%s/mon.sock,server,nowait' % run,
+                '-serial', 'file:%s/ser0.txt' % run, '-chardev', 'socket,id=s1,path=%s/ser1.sock,server=on,wait=off,logfile=%s/ser1.log' % (run, run), '-serial', 'chardev:s1']
     if dl:
-        cmd += ['-d', dl, '-D', run + '/log.txt'] + (['-dfilter', os.environ['CIC_FILTER']] if os.environ.get('CIC_FILTER') else [])
+        cmd += ['-d', dl, '-D', os.path.join(windows_logs, 'qemu-debug.log') if windows_logs is not None else run + '/log.txt'] + (['-dfilter', os.environ['CIC_FILTER']] if os.environ.get('CIC_FILTER') else [])
     drive = 'if=pflash,format=raw,file=%s' % flash if flash else 'if=pflash,format=raw,file=%s/flash.img,snapshot=on' % D
     cmd += ['-drive', drive, '-device', 'loader,file=%s/ifs.bin,addr=0x08010000,force-raw=on' % D, '-device', 'loader,addr=0x880138e0,cpu-num=0'] + (['-device', 'loader,file=%s,addr=0x12c00000,force-raw=on' % os.environ['CIC_EFS']] if os.environ.get('CIC_EFS') else [])
     if os.environ.get('CIC_XARGS'):

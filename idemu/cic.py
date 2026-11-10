@@ -4,14 +4,15 @@ A imagem (IFS de boot com os patches, flash NOR de 128 MB com IFS2 e EFS_RO) é 
 swfl_000003a6 (e do 417) e é compartilhada entre os ambientes. O QEMU (placa `cic`, bin/qemu-system-sh4) grava a tela composta em
 frame.rgb (CIC_FRAME) e recebe rotor/teclas por um socket (CIC_INPUT). Detalhes em docs/IDRIVE4.md.
 """
-import collections, glob, importlib.util, json, os, shutil, socket, subprocess, threading, time
+import collections, importlib.util, json, os, shutil, socket, subprocess, sys, threading, time
 from . import runtime
-from .catalog import CIC_VERSION as VERSION, CIC_PACKAGES as PKGS, STATE_DIR, WSL
+from .catalog import CIC_VERSION as VERSION, CIC_PACKAGES as PKGS, NATIVE_BIN, STATE_DIR, WSL
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(STATE_DIR, 'cic')
-QEMU = os.path.join(ROOT, 'bin', 'qemu-system-sh4')
-DEV_QEMU = os.path.expanduser('~/id4-qemu/build/qemu-system-sh4')     # compilado por src/cic/build.sh
+NATIVE = sys.platform == 'win32'
+QEMU = os.path.join(NATIVE_BIN, 'qemu-system-sh4.exe') if NATIVE else os.path.join(ROOT, 'bin', 'qemu-system-sh4')
+DEV_QEMU = None if NATIVE else os.path.expanduser('~/id4-qemu/build/qemu-system-sh4')
 IMAGES = ('ifs.bin', 'flash.img', 'efs.ifs', 'build.json')
 
 
@@ -19,7 +20,6 @@ def _cicrun():
     """tools/cic/run.py como módulo (montagem das imagens e linha de comando do QEMU)."""
     spec = importlib.util.spec_from_file_location('cicrun', os.path.join(ROOT, 'tools', 'cic', 'run.py'))
     m = importlib.util.module_from_spec(spec)
-    import sys
     sys.path.insert(0, os.path.join(ROOT, 'tools', 'cic'))
     spec.loader.exec_module(m)
     return m
@@ -48,11 +48,11 @@ def build(psdz=None, log=print, progress=lambda p, s: None):
         raise RuntimeError('pacotes do iDrive 4 não encontrados (swfl_000003a6 e swfl_00000417 versão %s) na PSdZData nem em '
                            '~/Downloads/System files/ID4' % VERSION)
     os.makedirs(OUT, exist_ok=True)
-    if os.path.isfile(DEV_QEMU) and (not os.path.isfile(QEMU) or os.path.getmtime(DEV_QEMU) > os.path.getmtime(QEMU)):
+    if DEV_QEMU and os.path.isfile(DEV_QEMU) and (not os.path.isfile(QEMU) or os.path.getmtime(DEV_QEMU) > os.path.getmtime(QEMU)):
         shutil.copy2(DEV_QEMU, QEMU)
         log('QEMU atualizado a partir de %s' % DEV_QEMU)
     if not os.path.isfile(QEMU):
-        raise RuntimeError('bin/qemu-system-sh4 não existe: rode src/cic/build.sh')
+        raise RuntimeError('Missing CIC QEMU executable: %s' % QEMU)
     progress(5, 'Lendo o pacote %s' % os.path.basename(pkg))
     old = {k: os.environ.get(k) for k in ('CIC_NOECURESET',)}
     os.environ['CIC_NOECURESET'] = '1'           # se o Root pedir reset ele segue vivo (o HMI não some da tela)
@@ -91,19 +91,17 @@ class CicRuntime(runtime.Runtime):
 
     def start(self, cold=False):
         if self.state in ('booting', 'running'): return
-        if os.path.isfile(DEV_QEMU) and (not os.path.isfile(QEMU) or os.path.getmtime(DEV_QEMU) > os.path.getmtime(QEMU)):
+        if DEV_QEMU and os.path.isfile(DEV_QEMU) and (not os.path.isfile(QEMU) or os.path.getmtime(DEV_QEMU) > os.path.getmtime(QEMU)):
             shutil.copy2(DEV_QEMU, QEMU)               # QEMU recompilado por src/cic/build.sh
         if not image_ready(): raise RuntimeError('imagem do iDrive 4 não montada: compile o ambiente')
-        import sys
         sys.path.insert(0, os.path.join(ROOT, 'tools', 'cic'))
         import hmiinput
         hmiinput.patch_flash_file(os.path.join(OUT, 'flash.img'))      # entrada do controlador (imagens montadas antes dela)
-        if self.zbe: self.zbe.close(); self.zbe = None
         shutil.rmtree(self.run, ignore_errors=True); os.makedirs(self.run); os.makedirs(self.logd, exist_ok=True)
         # flash gravável desta execução (clone APFS, instantâneo): o snapshot=on gravava num qcow2 temporário e às vezes travava o QEMU
         # numa gravação da flash (vCPU parado em blk_pwrite)
         fl = os.path.join(self.run, 'flash.img')
-        if subprocess.call(['cp', '-c', os.path.join(OUT, 'flash.img'), fl], stderr=subprocess.DEVNULL) != 0:
+        if NATIVE or subprocess.call(['cp', '-c', os.path.join(OUT, 'flash.img'), fl], stderr=subprocess.DEVNULL) != 0:
             shutil.copyfile(os.path.join(OUT, 'flash.img'), fl)
         self.state = 'booting'; self.err = None; self.t0 = time.time(); self.marks = {}; self.step = 'Iniciando o QEMU'; self.pct = 2
         self._fm = None; self._lastseq = None; self.fps_t = collections.deque(maxlen=400); self.boot_kind = 'cold'; self.stop_ev.clear()
@@ -120,22 +118,45 @@ class CicRuntime(runtime.Runtime):
 
     def _boot_thread(self):
         try:
-            cmd = _cicrun().qemu_cmd(OUT, run=self.run, qemu=QEMU, debug_log='', flash=os.path.join(self.run, 'flash.img'))
-            env = dict(os.environ, CIC_FRAME=self.frame_path, CIC_NORESET='1', CIC_INPUT=os.path.join(self.run, 'input.sock'),
-                       CIC_OUTPUT=os.path.join(self.run, 'output.sock'))
+            cmd = _cicrun().qemu_cmd(OUT, run=self.run, qemu=QEMU, debug_log=os.environ.get('CIC_D', ''),
+                                     flash=os.path.join(self.run, 'flash.img'),
+                                     windows_logs=self.logd if NATIVE else None)
+            endpoint_file = os.path.join(self.run, 'input.port') if NATIVE else None
+            with self._life:
+                if self.stop_ev.is_set(): return
+                zbe = self.zbe = VirtualZBE(self.run, self.send_cmd, native=NATIVE)
+            env = dict(os.environ, CIC_FRAME=self.frame_path, CIC_NORESET='1',
+                       CIC_INPUT=endpoint_file or os.path.join(self.run, 'input.sock'),
+                       CIC_OUTPUT=str(zbe.out[1]) if NATIVE else zbe.out)
             if WSL:
                 env['LD_LIBRARY_PATH'] = os.pathsep.join(filter(None, (os.path.join(ROOT, 'bin', 'lib'), env.get('LD_LIBRARY_PATH'))))
-            self.zbe = VirtualZBE(self.run, self.send_cmd)
             env.pop('CIC_DISPLAY', None)
-            out = open(os.path.join(self.run, 'qemu.out'), 'wb')
-            self._spawn('q', cmd, stdout=out, stderr=subprocess.STDOUT, env=env)
-            self._links()
-            slog = os.path.join(self.run, 'ser0.txt'); seen = set(); end = time.time() + 420
+            if NATIVE:
+                out = self._log('qemu.log')
+                serial_logs = [os.path.join(self.logd, n) for n in ('renderer.log', 'console.log')]
+            else:
+                out = open(os.path.join(self.run, 'qemu.out'), 'wb')
+                serial_logs = [os.path.join(self.run, n) for n in ('ser0.txt', 'ser1.log')]
+            qemu = self._spawn('q', cmd, stdout=out, stderr=subprocess.STDOUT, env=env)
+            if not NATIVE:
+                self._links()
+            seen = set(); end = time.time() + 420
             while not self.stop_ev.is_set():
-                if self.q.poll() is not None: raise RuntimeError('o QEMU terminou (%s); veja o log do QEMU' % self.q.returncode)
+                self._check_startup(qemu, 'QEMU', 'qemu.log')
+                if endpoint_file and not self.input_endpoint:
+                    try:
+                        with open(endpoint_file, encoding='ascii') as f:
+                            line = f.readline()
+                        port = int(line) if line.endswith('\n') else 0
+                        if 0 < port <= 65535:
+                            with self._cmd_lock:
+                                if not self.stop_ev.is_set():
+                                    self.input_endpoint = ('127.0.0.1', port)
+                    except (OSError, ValueError):
+                        pass
                 if self.state == 'booting':
                     txt = b''
-                    for fn in (slog, os.path.join(self.run, 'ser1.log')):
+                    for fn in serial_logs:
                         try:
                             with open(fn, 'rb') as f: txt += f.read()
                         except OSError:
@@ -144,8 +165,12 @@ class CicRuntime(runtime.Runtime):
                         if key not in seen and key.encode() in txt:
                             seen.add(key); self.pct = pct; self.step = step; self._mark(key.split('::')[-1])
                     if 'PHMIWrapper::HMIReady' in seen and self.frame_seq() > 0:
-                        self.state = 'running'; self.pct = 100; self.step = ''; self._mark('running')
-                        self.zbe.register()                 # anuncia o controlador ao HMI (FBlock 0xE5)
+                        if NATIVE and not self.input_endpoint:
+                            raise RuntimeError('CIC controller endpoint is missing. See the QEMU log.')
+                        with self._life:
+                            if self.stop_ev.is_set(): return
+                            zbe.register()                  # anuncia o controlador ao HMI (FBlock 0xE5)
+                            self.state = 'running'; self.pct = 100; self.step = ''; self._mark('running')
                     elif time.time() > end:
                         raise RuntimeError('o HMI não ficou pronto em 7 minutos; veja os logs')
                     elif not seen:
@@ -157,6 +182,16 @@ class CicRuntime(runtime.Runtime):
             if not self.stop_ev.is_set():
                 self.err = str(e); self.state = 'error'; self._kill_children()
 
+    def _kill_children(self):
+        zbe, self.zbe = self.zbe, None
+        if zbe: zbe.close()
+        with self._cmd_lock:
+            if self._sock:
+                self._sock.close()
+                self._sock = None
+            self.input_endpoint = None
+        super()._kill_children()
+
     def status(self):
         s = runtime.Runtime.status(self); s['kind'] = self.kind; s['disp'] = list(self.disp)
         return s
@@ -164,10 +199,13 @@ class CicRuntime(runtime.Runtime):
     # ---------- entrada: controlador iDrive virtual ----------
     def send_cmd(self, line):
         with self._cmd_lock:
+            if self.stop_ev.is_set() or (NATIVE and not self.input_endpoint):
+                return
             if self._sock is None:
-                self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+                self._sock = socket.socket(socket.AF_INET if NATIVE else socket.AF_UNIX, socket.SOCK_DGRAM)
+            endpoint = self.input_endpoint if NATIVE else os.path.join(self.run, 'input.sock')
             try:
-                self._sock.sendto(line.encode(), os.path.join(self.run, 'input.sock'))
+                self._sock.sendto(line.encode(), endpoint)
             except OSError:
                 pass
 
@@ -196,12 +234,20 @@ class VirtualZBE:
     KEYS = {1: (0, 0, 1), 2: (0, 0, 2), 3: (0, 0, 4), 4: (0, 0, 16), 5: (0, 0, 8), 6: (0, 0, 64), 7: (0, 0, 32), 8: (0x1e, 0, 1),
             9: (0x1d, 1, 0), 10: (0x1d, 4, 0), 11: (0x1d, 8, 0), 12: (0x1d, 2, 0)}
 
-    def __init__(self, run_dir, send, log=lambda s: None):
+    def __init__(self, run_dir, send, log=lambda s: None, native=False):
         self.send_cmd = send; self.log = log; self.cnt = 0; self.pos = 0x1000; self.lock = threading.Lock()
-        self.out = os.path.join(run_dir, 'output.sock'); self.registered = False; self.configured = False
-        try: os.unlink(self.out)
-        except OSError: pass
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM); self.sock.bind(self.out); self.sock.settimeout(0.5)
+        self.registered = False; self.configured = False
+        if native:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.sock.bind(('127.0.0.1', 0))
+            self.out = self.sock.getsockname()
+        else:
+            self.out = os.path.join(run_dir, 'output.sock')
+            try: os.unlink(self.out)
+            except OSError: pass
+            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            self.sock.bind(self.out)
+        self.sock.settimeout(0.5)
         self.stop = threading.Event()
         threading.Thread(target=self._rx, daemon=True).start()
 

@@ -1,0 +1,45 @@
+name: macOS compatibility
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apple-silicon:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check Unix entry points
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          for name in ("IDEmu.command", "tools/mgu/c.py", "tools/mgu/rse_overlay/idemu-tty"):
+              path = Path(name)
+              assert os.access(path, os.X_OK), f"{name} must be executable"
+              assert b"\r" not in path.read_bytes(), f"{name} needs Unix line endings"
+          PY
+          /bin/zsh -n IDEmu.command
+          /bin/sh -n tools/mgu/rse_overlay/idemu-tty
+      - name: Run shared runtime tests
+        run: |
+          PYTHONPATH=tests python -m unittest test_catalog_stats test_mapsvc test_system_files test_v850
+      - name: Build the macOS renderer
+        run: sh src/glhost/build.sh
+      - name: Build and check the shared OMAP5 board
+        run: |
+          brew install ninja pkgconf glib pixman dtc
+          dtc_prefix="$(brew --prefix dtc)"
+          export CFLAGS="-I$dtc_prefix/include"
+          export LDFLAGS="-L$dtc_prefix/lib"
+          curl --fail --location --retry 3 https://download.qemu.org/qemu-11.1.2.tar.xz -o "$RUNNER_TEMP/qemu-11.1.2.tar.xz"
+          QEMU_BUILD_JOBS=3 sh tools/qemu/build-evo.sh "$RUNNER_TEMP/qemu-11.1.2.tar.xz"

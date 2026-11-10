@@ -8,6 +8,7 @@ const net = require('net');
 const http = require('http');
 
 const ROOT = path.resolve(__dirname, '..');
+const ICON = path.join(ROOT, 'installer', 'icon.png');
 let server = null, win = null, port = 0, quitting = false;
 
 function freePort(pref) {
@@ -48,7 +49,7 @@ function stopServer() {
 
 function createWindow() {
   win = new BrowserWindow({
-    width: 1440, height: 920, minWidth: 900, minHeight: 600, title: 'IDEmu', backgroundColor: '#1c1c1e', show: false,
+    width: 1440, height: 920, minWidth: 900, minHeight: 600, title: 'IDEmu', icon: ICON, backgroundColor: '#1c1c1e', show: false,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default', trafficLightPosition: { x: 16, y: 16 },
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
@@ -75,6 +76,7 @@ ipcMain.handle('idemu:pick', async (ev, o) => {
 if (!app.requestSingleInstanceLock()) { app.quit(); } else {
   app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
   app.whenReady().then(async () => {
+    if (process.platform === 'darwin' && app.dock) app.dock.setIcon(ICON);
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       { role: 'appMenu' }, { role: 'editMenu' },
       { label: 'Visualizar', submenu: [{ role: 'reload' }, { role: 'forceReload' }, { type: 'separator' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { type: 'separator' }, { role: 'togglefullscreen' }, { role: 'toggleDevTools' }] },

@@ -29,6 +29,9 @@ def patch_image(img, edits):
 
 
 def root_password_edit(pw='root'):
+    if pw == 'root':
+        # DES crypt("root", "KP"), also usable on Windows and Python 3.13+.
+        return b'KPcKrCeGUgGeA', b'KPNHwB2guYDys'
     import crypt
     return (b'KPcKrCeGUgGeA', crypt.crypt(pw, 'KP').encode())
 

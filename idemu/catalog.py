@@ -1,5 +1,5 @@
 """Catálogo do PSDZData: séries, chassis, pacotes SWFL necessários e versões disponíveis."""
-import os, re, json, glob, sys
+import os, re, json, glob, shutil, sys, tempfile
 from . import codegen
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -13,6 +13,9 @@ def native_evo_ready():
         os.path.isfile(os.path.join(NATIVE_BIN, name))
         for name in ('qemu-system-arm.exe', 'glhost.exe')
     )
+
+def native_cic_ready():
+    return sys.platform == 'win32' and os.path.isfile(os.path.join(NATIVE_BIN, 'qemu-system-sh4.exe'))
 
 def runtime_root():
     return os.path.join(STATE_DIR, 'run') if sys.platform == 'win32' else '/tmp/idemu-%d' % os.getuid()
@@ -159,7 +162,9 @@ def backend_supported(kind):
     if WSL:
         qemu = os.path.join(ROOT_DIR, 'bin', 'qemu-system-sh4')
         return kind == 'cic' and os.path.isfile(qemu) and os.access(qemu, os.X_OK)
-    return kind in DIRECT_BACKENDS and sys.platform != 'win32'
+    if sys.platform == 'win32':
+        return kind == 'cic' and native_cic_ready()
+    return kind in DIRECT_BACKENDS
 
 for _g in GENERATIONS:
     _g['supported'] = backend_supported(_g.get('direct'))
@@ -313,6 +318,23 @@ def evo_package_status(swfl=None, brand='bmw'):
     have = sum(item['found'] for item in items)
     return {'kind': 'evo', 'ok': have == len(items), 'items': items, 'have': have, 'total': len(items)}
 
+def _stage_package(path, dst, kind):
+    if os.path.normcase(os.path.realpath(dst)) == os.path.normcase(os.path.realpath(path)):
+        return
+    if sys.platform == 'win32' and kind == 'cic':
+        # A per-user Windows installation may not have permission to create symlinks.
+        with tempfile.NamedTemporaryFile(dir=os.path.dirname(dst), delete=False) as staged:
+            temp_path = staged.name
+        try:
+            shutil.copyfile(path, temp_path)
+            os.replace(temp_path, dst)
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+    else:
+        if os.path.lexists(dst): os.unlink(dst)
+        os.symlink(path, dst)
+
 def stage_file(path, kind):
     # liga um arquivo escolhido no estágio; devolve (ok, mensagem). O nome precisa ser o de um pacote exigido
     path = os.path.abspath(os.path.expanduser(path or ''))
@@ -326,9 +348,8 @@ def stage_file(path, kind):
     d = os.path.join(STAGE, 'swe', 'swfl'); os.makedirs(d, exist_ok=True)
     dst = os.path.join(d, n)
     try:
-        if os.path.lexists(dst): os.unlink(dst)
-        os.symlink(path, dst)
-    except OSError as e: return False, 'não consegui gravar o link: %s' % e
+        _stage_package(path, dst, kind)
+    except OSError as e: return False, 'não consegui gravar o arquivo: %s' % e
     return True, 'ok'
 
 def effective_psdz(kind):
@@ -344,7 +365,6 @@ def effective_psdz(kind):
             dst = os.path.join(d, i['file'])
             if not os.path.exists(dst):
                 try:
-                    if os.path.lexists(dst): os.unlink(dst)
-                    os.symlink(i['path'], dst)
+                    _stage_package(i['path'], dst, kind)
                 except OSError: pass
     return STAGE

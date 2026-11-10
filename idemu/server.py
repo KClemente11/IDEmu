@@ -37,9 +37,10 @@ def runtime_module(kind):
     return import_module('.' + catalog.DIRECT_BACKENDS.get(kind, 'runtime'), __package__)
 
 def runtime_available(env):
-    if not catalog.backend_supported(env.get('kind')):
+    kind = env.get('kind')
+    if not catalog.backend_supported(kind):
         return False
-    if sys.platform != 'win32':
+    if sys.platform != 'win32' or kind == 'cic':
         return True
     version = (env.get('coding') or {}).get('hmi_version') or 'id6_light'
     return version.startswith('id6') and catalog.native_evo_ready()
@@ -280,7 +281,7 @@ class App:
         env = self.read_env(eid)
         require_system_files(env)
         if not runtime_available(env):
-            raise ApiError('The native Windows runtime currently boots iDrive 6 only and requires the Windows QEMU and renderer.', 409)
+            raise ApiError('This environment requires a supported iDrive generation and its native Windows runtime.', 409)
         if self.build_info(eid, env)['state'] != 'ready': raise ApiError('compile o ambiente antes de iniciar')
         if not during_flash and (self.flashes.get(eid) or {}).get('state') == 'running': raise ApiError('aguarde a gravação da codificação terminar')
         if self.rt and self.rt.state != 'stopped':          # o anterior parou com erro: encerra o que tiver sobrado dele (QEMU, renderizador, portas CAN/GPS)
@@ -782,12 +783,19 @@ def serve(host='127.0.0.1', port=8765, open_browser=True):
     print('IDEmu: interface em', url, flush=True)
     get_stats()
     import signal
-    def _bye(*_):          # terminal fechado / kill: não deixa QEMU, renderizador e sshd para trás
+    def _cleanup():
         if getattr(APP, '_phone', None): APP._phone.stop()
         if APP.rt: APP.rt.stop()
+    def _bye(*_):          # terminal fechado / kill: não deixa QEMU, renderizador e sshd para trás
+        _cleanup()
         os._exit(0)
     signal.signal(signal.SIGTERM, _bye)
     if hasattr(signal, 'SIGHUP'): signal.signal(signal.SIGHUP, _bye)
+    if hasattr(signal, 'SIGBREAK'): signal.signal(signal.SIGBREAK, _bye)       # Ctrl+Break no console do Windows
+    if sys.platform == 'win32':
+        # Fechar a janela do console (ou sair do Windows) não gera SIGTERM/SIGHUP nem roda o finally abaixo.
+        from . import winproc
+        winproc.on_console_close(_cleanup)
     if open_browser:
         threading.Timer(0.6, lambda: _open(url)).start()
     try: srv.serve_forever()

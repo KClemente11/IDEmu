@@ -10,7 +10,9 @@ edit() {
         *) sed -i "$@" ;;
     esac
 }
-cp "$H"/cic.c "$H"/cic_soc.c "$H"/cic_scif.c "$H"/cic_pci.c "$H"/cic.h "$Q/hw/sh4/"
+for file in cic.c cic_soc.c cic_scif.c cic_pci.c cic.h; do
+    cmp -s "$H/$file" "$Q/hw/sh4/$file" || cp "$H/$file" "$Q/hw/sh4/$file"
+done
 grep -q CONFIG_CIC "$Q/hw/sh4/meson.build" || python3 - "$Q/hw/sh4/meson.build" <<'EOP'
 from pathlib import Path
 import sys
@@ -151,5 +153,8 @@ s = s.replace("        case 0x80: /* Erase */\n        case 0x90: /* Autoselect 
               "        case 0xC0: /* cic: PPB */\n            pfl->cmd = 0xC0; pfl->wcycle = 0; pfl->ppb_exit = 0;\n            return;\n        case 0x80: /* Erase */\n        case 0x90: /* Autoselect */\n        case 0xA0: /* Program */\n            pfl->cmd = cmd;\n            trace_pflash_write_start(pfl->name, cmd);\n            break;", 1)
 open(p, 'w').write(s)
 EOP
+if [ "${CIC_PATCH_ONLY:-0}" = 1 ]; then
+    exit 0
+fi
 cd "$B" && ninja -j "${QEMU_BUILD_JOBS:-8}" qemu-system-sh4
 cp "$B/qemu-system-sh4" "$H/../../bin/qemu-system-sh4" 2>/dev/null || true

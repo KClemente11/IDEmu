@@ -3,6 +3,9 @@
 **Atualização 2026-11-09 (2): roda no app.** Em **Novo ambiente → iDrive 4** o IDEmu cria um ambiente `kind: cic`; **Compilar** monta a imagem
 compartilhada em `<IDEmu>/cic` (`ifs.bin`, `flash.img`, `efs.ifs`, a partir de `swfl_000003a6` e `swfl_00000417` 008_090_002 da PSdZData; alguns
 segundos) e **Iniciar** sobe `bin/qemu-system-sh4` (`idemu/cic.py`). A tela do carro mostra o Hauptmenü real; o boot leva ≈ 70 s até `running`.
+* **Windows nativo**: o instalador inclui `bin/windows/qemu-system-sh4.exe`. O app lê o mesmo `frame.rgb` por um mapeamento Win32 e troca
+  os telegramas do controlador por UDP em `127.0.0.1`. Nessa plataforma, `CIC_INPUT` aponta para o arquivo com a porta escolhida pelo QEMU e
+  `CIC_OUTPUT` contém a porta do app. Veja a [instalação no Windows](WINDOWS.md#native-windows-installer).
 * **Vídeo no app**: o QEMU grava a tela composta em `frame.rgb` (formato `IDFR` dos outros ambientes) quando `CIC_FRAME` está definido, no
   máximo ~30 quadros/s e só quando a VRAM das camadas muda (dirty log). Não depende da janela do QEMU.
 * **Composição**: ignora o alpha da camada (o `libffb` não grava alpha no blend, então ele é inconsistente) e trata só a cor de limpeza

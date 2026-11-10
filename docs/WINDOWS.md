@@ -67,18 +67,24 @@ Run `IDEmu-Setup.exe`. Setup installs for your Windows account and adds Start me
 
 **Check for updates** looks at the latest stable [GitHub release](https://github.com/KClemente11/IDEmu/releases) from this fork. If it finds a newer version, it asks before downloading, verifies the installer's SHA-256 against GitHub's release metadata, then opens Setup. Close the emulator or firmware tool first so Setup can replace the app files.
 
+To uninstall, use the **Uninstall** Start menu shortcut or **Settings > Apps > Installed apps**. The uninstaller stops any IDEmu processes still running from the installation folder, removes the app, and asks whether to delete `%LOCALAPPDATA%\IDEmu` (settings, built environments, logs and caches). That folder is shared by IDEmu Native and the WSL edition's firmware tool. Firmware in your PSdZData folder and environments inside WSL are never deleted. For scripted test runs, `unins000.exe /VERYSILENT /PURGEDATA` removes the data folder without asking; a silent uninstall without `/PURGEDATA` keeps it.
+
+The native runtime ties QEMU and the renderer to the IDEmu process, so closing the console window also stops the VM.
+
 To build the WSL installer locally, install Inno Setup on the build machine and build the WSL helpers as described above. Then run:
 
-```powershell
-.\.build-tools\Scripts\python.exe .\build_installer.py --version 0.1.0
-.\dist\installer\IDEmu-Setup.exe
 ```
+.\.build-tools\Scripts\python.exe .\build_installer.py --backend native --version 0.1.3 --output-dir .\dist\native-installer-0.1.3
+```
+Note: The installer compiler will reject to overwrite any existing installer, so make sure you change the output directory (.\dist\native-installer-0.1.1) everytime you want to run the installer. Or delete the old installer.
 
 Pass `--iscc C:\path\to\ISCC.exe` if the compiler is outside its normal install location. The GitHub **Windows installer** workflow can build test artifacts manually. Pushing a stable `vX.Y.Z` tag to the fork publishes the two Windows installers and the corresponding upstream QEMU source archive. The tag supplies the IDEmu patches and build scripts. The updater uses stable release assets.
 
-## Native iDrive 6 installer
+## Native Windows installer
 
-The native edition includes Windows builds of the patched OMAP5 QEMU and OpenGL renderer. Use System Files to validate firmware at `C:\BMW\PSdZData` and build an iDrive 6 environment. The app keeps generated images, settings, and logs under `%LOCALAPPDATA%\IDEmu`. The renderer requires a Windows OpenGL driver that supports OpenGL 2.1 and framebuffer objects.
+The native edition runs iDrive 4 (CIC High) and iDrive 6 (NBT Evo) without WSL. It includes Windows builds of QEMU for both boards and the Evo OpenGL renderer. The app keeps generated images, settings, and logs under `%LOCALAPPDATA%\IDEmu`. Evo requires a Windows OpenGL driver that supports OpenGL 2.1 and framebuffer objects.
+
+Open **System Files** and validate your PSdZData folder. The default is `C:\BMW\PSdZData`. For CIC, put `swfl_000003a6.bin.008_090_002` and `swfl_00000417.bin.008_090_002` in `C:\BMW\PSdZData\CIC\swe\swfl`, or select the two files in System Files. Create an **iDrive 4 (CIC)** environment, then choose **Build** and **Start**. CIC displays its 1280 × 480 interface through the web app and accepts rotor and button input.
 
 Build the native runtime in an x64 MSYS2 UCRT64 shell. Use a Windows build directory without spaces. The installed app ships its Windows executables and DLLs.
 
@@ -90,7 +96,7 @@ bash tools/qemu/build-windows-native.sh /path/to/qemu-11.1.2.tar.xz
 Then build Setup from Windows PowerShell using the existing PyInstaller and Inno Setup tools.
 
 ```powershell
-.\.build-tools\Scripts\python.exe .\build_installer.py --backend native --version 0.1.0 --output-dir .\dist\native-installer
+.\.build-tools\Scripts\python.exe .\build_installer.py --backend native --version 0.1.3 --output-dir .\dist\native-installer
 ```
 
-`IDEmu-Native-Setup.exe` installs alongside the WSL edition. The update shortcut looks for the native installer asset in the same repository. The initial native runtime supports iDrive 6 cold boot. Use the WSL edition for snapshots, guest SSH, or its other supported generations.
+`IDEmu-Native-Setup.exe` installs alongside the WSL edition. The update shortcut looks for the native installer asset in the same repository. The native runtime supports cold boot for iDrive 4 and 6. The WSL edition also supports iDrive 5 and provides snapshots and guest SSH for Evo.
