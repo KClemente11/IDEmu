@@ -108,4 +108,4 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" IDEmu-Setup.exe IDEmu-Native-Setup.exe qemu-11.1.2.tar.xz \
             --repo "$GITHUB_REPOSITORY" --verify-tag --latest \
-            --notes 'Choose the native Windows iDrive 6 installer or the WSL2 edition. The QEMU source archive is provided alongside the build scripts and patches at this tag.'
+            --notes 'Choose the native Windows installer (iDrive 4, 6 and 7) or the WSL2 edition. The QEMU source archive is provided alongside the build scripts and patches at this tag.'

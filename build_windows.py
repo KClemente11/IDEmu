@@ -1,6 +1,7 @@
 """Build a Windows IDEmu executable with PyInstaller."""
 import argparse
 import importlib.util
+import os
 from pathlib import Path
 import platform
 import shutil
@@ -40,6 +41,21 @@ def stage_wsl_payload(destination):
     libs = ROOT / 'bin' / 'lib'
     if libs.is_dir():
         shutil.copytree(libs, bin_dir / 'lib')
+
+
+def copy_overlay(source, destination):
+    """Copy the iDrive 7 overlay. A symlink (a Git checkout with symlinks enabled) is stored as its target text,
+    which is how Git for Windows checks it out by default and what idemu/mgu7.py expects."""
+    for path in sorted(source.rglob('*')):
+        target = destination / path.relative_to(source)
+        if path.is_symlink():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(os.readlink(path).replace('\\', '/').encode())
+        elif path.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
 
 
 def main():
@@ -98,6 +114,24 @@ def main():
                     with exe.open('rb') as source:
                         if source.read(2) != b'MZ':
                             parser.error(f'{exe} is not a Windows executable.')
+                # iDrive 7 is included when its helpers were built (tools/qemu/build-windows-native.sh).
+                mgu7_executables = ('qemu-system-x86_64.exe', 'glhost7.exe')
+                share = native / 'qemu-share'
+                if all((native / name_required).is_file() for name_required in mgu7_executables) and (share / 'bios-256k.bin').is_file():
+                    native_executables += mgu7_executables
+                    command += ['--hidden-import', 'idemu.mgu7', '--hidden-import', 'idemu.coding7', '--hidden-import', 'uuid',
+                                '--add-data', f'{share}:bin/windows/qemu-share']
+                    mgu_tools = work / 'mgu'
+                    mgu_tools.mkdir()
+                    for name_required in ('har.py', 'hosttree.py', 'mkext2.py', 'patch_rse.py', 'gen_fakesvc.py', 'gen_coding7.py',
+                                          'tscfix.py', 'idemu-init.sh'):
+                        shutil.copy2(ROOT / 'tools' / 'mgu' / name_required, mgu_tools)
+                    copy_overlay(ROOT / 'tools' / 'mgu' / 'rse_overlay', mgu_tools / 'rse_overlay')
+                    guest7 = work / 'guest7'
+                    shutil.copytree(ROOT / 'idemu' / 'guest7', guest7, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+                    command += ['--add-data', f'{mgu_tools}:tools/mgu', '--add-data', f'{guest7}:idemu/guest7']
+                else:
+                    print('Note: iDrive 7 is left out of this build (qemu-system-x86_64.exe, glhost7.exe or qemu-share is missing).')
                 for file in sorted(native.iterdir()):
                     if file.name in native_executables or file.suffix.lower() == '.dll':
                         command += ['--add-data', f'{file}:bin/windows']

@@ -1,6 +1,15 @@
 // glhost7: renderizador no Mac para o iDrive 7. Recebe o fluxo EGL/GLES3 do guest (gles_guest.c) por um socket
 // unix do QEMU (ttyS1), executa em OpenGL 4.1 core (CGL, fora da tela) e grava cada quadro em <saida>/frame.rgba.
 // Uso: glhost7 <socket do QEMU> <pasta de saída>
+// Windows (glhost7.exe): o mesmo fluxo em OpenGL 4.1 core por WGL; só o anel de memória compartilhada (shm:nome). Ver win32_host7.h.
+#ifdef _WIN32
+#include "win32_host7.h"
+#include <ctype.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <time.h>
+#include <sys/stat.h>
+#else
 #define GL_SILENCE_DEPRECATION 1
 #include <OpenGL/OpenGL.h>
 #include <OpenGL/gl3.h>
@@ -15,11 +24,19 @@
 #include <sys/un.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
+#endif
 #include <setjmp.h>
 #include <signal.h>
 #include <errno.h>
 #include "proto.h"
 #include "gl_ids.h"
+#ifdef _WIN32
+// O setjmp() do MinGW guarda o quadro para o longjmp() desenrolar a pilha por SEH, e esse desenrolar derruba o glhost7 (violação de acesso
+// dentro da ntdll, sem aviso) na primeira mensagem do guest. Sem o quadro o longjmp() só restaura os registradores; o QEMU faz o mesmo
+// (include/system/os-win32.h). Fica depois de todos os #include: os cabeçalhos do MinGW redefinem setjmp.
+#undef setjmp
+#define setjmp(env) _setjmp((env), NULL)
+#endif
 
 typedef unsigned char u8; typedef unsigned int u32; typedef unsigned long long u64; typedef long long i64;
 static int sock = -1;
@@ -33,7 +50,11 @@ static char outdir[512]; static u8 *frame; static int *shm_hdr; static u8 *shm; 
 static u64 unknown_ops[64]; static u64 n_draws, n_clears; static u64 replay_swaps;
 // perfil (GLHOST7_PROF=1): por operação, quantidade, bytes de carga, tempo gasto no GL e respostas síncronas
 static int prof; static u64 p_cnt[64], p_bytes[64], p_ns[64], p_sync[64], p_idle_ns, p_rbytes; static i64 p_last;
+#ifdef _WIN32
+static u64 nsec(void) { return win_nsec(); }
+#else
 static u64 nsec(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (u64)t.tv_sec * 1000000000ull + t.tv_nsec; }
+#endif
 static void prof_dump(void) {
   static const char *nm[] = {"NOP","INIT_SURFACE","SWAP","GEN","DELETE","CREATE_SHADER","CREATE_PROGRAM","DELETE_SHADER","DELETE_PROGRAM","SIMPLE","SHADER_SOURCE","BUFFER_DATA","TEX_IMAGE","TEX_SUBIMAGE","COMPRESSED_SUBIMAGE","UNIFORMV","DRAW_BUFFERS","GET_INTEGERV","GET_SHADERIV","GET_PROGRAMIV","GET_SHADER_LOG","GET_PROGRAM_LOG","GET_ATTRIB_LOC","GET_UNIFORM_LOC","CHECK_FB","READ_PIXELS","FINISH","BUFFER_SUBDATA"};
   u64 tb = 0, ts = 0, tn = 0; fprintf(stderr, "PROF ---- ocioso %.1fs\n", p_idle_ns / 1e9);
@@ -56,17 +77,27 @@ static void rec_close(void) {
 static void idle_wait(unsigned *n) {                 // espera curta: gira um pouco (latência baixa quando o guest está ativo) e depois dorme
   if (H && at_hdr) H->host_idle = 1;
   if (stop_rec && at_hdr) rec_close();
+#ifdef _WIN32
+  win_idle(++*n);
+#else
   if (++*n < 400) { __asm__ volatile("yield" ::: "memory"); return; }
   if (*n < 4000) { usleep(30); return; }
   usleep(600);
+#endif
 }
 static void shm_open_ring(const char *name) {
+#ifdef _WIN32
+  void *m = win_open_ring(name, SHM_SIZE);             // o QEMU cria o mapeamento ao subir
+  if (!m) die("memória compartilhada não encontrada");
+  H = m; gdat = (u8 *)m + G_OFF; hdat = (u8 *)m + H_OFF;
+#else
   int fd = -1;
   for (int i = 0; i < 1200 && fd < 0; i++) { fd = shm_open(name, O_RDWR, 0600); if (fd < 0) usleep(100000); }   // o QEMU cria o objeto ao subir
   if (fd < 0) die("memória compartilhada não encontrada");
   void *m = MAP_FAILED; for (int i = 0; i < 600; i++) { m = mmap(NULL, SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0); if (m != MAP_FAILED) break; usleep(100000); }
   if (m == MAP_FAILED) die("mmap da memória compartilhada falhou");
   close(fd); H = m; gdat = (u8 *)m + G_OFF; hdat = (u8 *)m + H_OFF;
+#endif
   fprintf(stderr, "glhost7: anel %s mapeado\n", name);
 }
 static int ring_sync(void) {                         // o guest reiniciou o fluxo (processo novo): descarta o que ficou pela metade
@@ -84,6 +115,9 @@ static void rdn(void *p, size_t n) {
   u8 *d = p; unsigned w = 0;
   while (n) {
     if (H->magic != SHM_MAGIC) { idle_wait(&w); continue; }
+#ifdef _WIN32
+    { static unsigned seen; if (seen != H->epoch) { seen = H->epoch; WIN_TRACE("glhost7: guest stream: epoch %u, start %llu, tail %llu\n", seen, H->g_start, H->g_tail); } }
+#endif
     if (ring_sync()) longjmp(resync, 1);
     u64 av = H->g_tail - gh;
     if (!av) { idle_wait(&w); continue; }
@@ -279,9 +313,13 @@ static void del1(int kind, GLuint r) {
 }
 
 static void init_gl(void) {
+#ifdef _WIN32
+  const char *err = win_init_gl(); if (err) die(err);
+#else
   CGLPixelFormatAttribute at[] = { kCGLPFAOpenGLProfile, (CGLPixelFormatAttribute)kCGLOGLPVersion_GL4_Core, kCGLPFAAccelerated, kCGLPFAColorSize, (CGLPixelFormatAttribute)24, (CGLPixelFormatAttribute)0 };
   CGLPixelFormatObj pf; GLint n; if (CGLChoosePixelFormat(at, &pf, &n) || !pf) die("sem formato de pixel GL 4.1");
   CGLContextObj ctx; if (CGLCreateContext(pf, NULL, &ctx)) die("CGLCreateContext"); CGLSetCurrentContext(ctx);
+#endif
   fprintf(stderr, "glhost7: %s | %s\n", glGetString(GL_RENDERER), glGetString(GL_VERSION));
   glGenVertexArrays(1, &vao0); glBindVertexArray(vao0);
   glEnable(GL_PROGRAM_POINT_SIZE);
@@ -299,9 +337,18 @@ static void init_surface(u32 id, int w, int h) {
   glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, winrb);
   glViewport(0, 0, w, h); glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
   free(frame); frame = malloc((size_t)w * h * 4);
+#ifdef _WIN32
+  size_t need = 64 + (size_t)w * h * 4; char p[600]; snprintf(p, sizeof p, "%s/frame.rgba", outdir);
+  if (!shm || need != shm_size) {                      // mesmo tamanho (o HMI reiniciou): mantém o mapeamento que o app já abriu
+    if (shm) UnmapViewOfFile(shm);
+    shm_size = need; shm = win_frame_mapping(p, shm_size);
+    if (!shm) die("não consegui criar o frame.rgba");
+  }
+#else
   if (shm) munmap(shm, shm_size);
   shm_size = 64 + (size_t)w * h * 4; char p[600]; snprintf(p, sizeof p, "%s/frame.rgba", outdir);
   int fd = open(p, O_RDWR | O_CREAT | O_TRUNC, 0644); ftruncate(fd, shm_size); shm = mmap(NULL, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0); close(fd);
+#endif
   shm_hdr = (int *)shm; shm_hdr[0] = w; shm_hdr[1] = h; shm_hdr[2] = 0; frames = 0;
   fprintf(stderr, "glhost7: superfície %dx%d\n", w, h);
 }
@@ -310,7 +357,9 @@ int main(int argc, char **argv) {
   if (argc < 3) die("uso: glhost7 <socket|shm:nome> <pasta> [--replay arquivo]");
   strncpy(outdir, argv[2], sizeof outdir - 1); mkdir(outdir, 0755); verbose = getenv("GLHOST7_VERBOSE") != NULL; prof = getenv("GLHOST7_PROF") != NULL;
   idmap = calloc(IDMAX, 4); init_gl();
+#ifndef _WIN32
   signal(SIGUSR1, on_usr1);
+#endif
   const char *rp = getenv("GLHOST7_REC");
   if (rp && !strncmp(argv[1], "shm:", 4)) { snprintf(rec_path, sizeof rec_path, "%s", rp); rec = fopen(rp, "wb"); if (rec) setvbuf(rec, NULL, _IOFBF, 1 << 20); }
   for (int i = 3; i + 1 < argc; i++) if (!strcmp(argv[i], "--replay")) {            // restaurar: reexecuta o fluxo gravado antes de adotar o anel
@@ -321,10 +370,14 @@ int main(int argc, char **argv) {
   }
   if (!strncmp(argv[1], "shm:", 4)) shm_open_ring(argv[1] + 4);
   else {
+#ifdef _WIN32
+    die("no Windows o canal gráfico é a memória compartilhada: use shm:nome");
+#else
     struct sockaddr_un sa; memset(&sa, 0, sizeof sa); sa.sun_family = AF_UNIX; strncpy(sa.sun_path, argv[1], sizeof sa.sun_path - 1);
     sock = socket(AF_UNIX, SOCK_STREAM, 0);
     for (int i = 0;; i++) { if (!connect(sock, (struct sockaddr *)&sa, sizeof sa)) break; if (i > 600) die("não conectou ao QEMU"); usleep(100000); }
     fprintf(stderr, "glhost7: conectado a %s\n", argv[1]);
+#endif
   }
   static u8 *buf; static size_t cap; static time_t tlog; buf = malloc(1 << 20); cap = 1 << 20; tlog = time(0);
   if (setjmp(resync) == 2) {                        // fim da reprodução: mostra o último quadro e passa a ler o anel de onde a VM parou
@@ -334,12 +387,21 @@ int main(int argc, char **argv) {
     char p[700]; snprintf(p, sizeof p, "%s/gl.ready", outdir); FILE *f = fopen(p, "w"); if (f) { fprintf(f, "%llu\n", (unsigned long long)replay_swaps); fclose(f); }
     fprintf(stderr, "glhost7: reprodução concluída (%llu quadros); anel adotado em %llu\n", (unsigned long long)replay_swaps, (unsigned long long)gh);
   }
+#ifdef _WIN32
+  WIN_TRACE("glhost7: command loop, reading from %llu\n", gh);
+#endif
   for (;;) {
     u64 t_a = prof ? nsec() : 0; u32 h[2]; at_hdr = 1; rdn(h, 8); u32 op = h[0], len = h[1];
+#ifdef _WIN32
+    WIN_TRACE("glhost7: command %llu: op %u, %u bytes\n", cmds + 1, op, len);
+#endif
     if (len > cap) { cap = len + 4096; buf = realloc(buf, cap); }
     if (len) rdn(buf, len);
     u64 t_b = prof ? nsec() : 0; if (prof) p_idle_ns += t_b - t_a;
     u32 *w = (u32 *)buf; cmds++;
+#ifdef _WIN32
+    win_ops = cmds; win_last_op = op; win_last_len = len; win_last_fn = (op == OP_SIMPLE && len >= 4) ? w[0] : ~0u;      // para o relato de falha
+#endif
     switch (op) {
     case OP_INIT_SURFACE: init_surface(w[0], w[1], w[2]); break;
     case OP_SWAP: if (replaying) { replay_swaps++; rep32(1); break; } glFlush(); save_frame(); rep32(1); break;

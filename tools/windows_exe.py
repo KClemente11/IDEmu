@@ -29,7 +29,26 @@ def run_wsl(root, argv):
         return 130
 
 
+def run_tool(script, argv):
+    """Run one of the bundled tools/mgu scripts in this process. The frozen app has no python.exe to start them with."""
+    import runpy
+    tools = (Path(__file__).resolve().parent / 'tools').resolve()
+    script = Path(script).resolve()
+    if tools not in script.parents or script.suffix != '.py':
+        print('Not a bundled IDEmu tool: %s' % script, file=sys.stderr)
+        return 2
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, 'reconfigure'):
+            stream.reconfigure(errors='replace')
+    sys.argv = [str(script), *argv]
+    sys.path.insert(0, str(script.parent))
+    runpy.run_path(str(script), run_name='__main__')
+    return 0
+
+
 def main():
+    if len(sys.argv) >= 3 and sys.argv[1] == '--run-tool':
+        return run_tool(sys.argv[2], sys.argv[3:])
     if sys.argv[1:] == ['--check-update']:
         from idemu.windows_update import ASSET, NATIVE_ASSET, main as update
         native = (Path(__file__).resolve().parent / 'bin' / 'windows' / 'glhost.exe').is_file()

@@ -10,6 +10,11 @@ Uso: har.py -l pacote.bin.*                lista
      har.py pacote.bin.* destino [regex]   extrai (só os caminhos que casam com a regex, se dada)
 """
 import sys, os, re, zlib, struct, stat as st
+if sys.platform == 'win32' or os.environ.get('IDEMU_TREE_MANIFEST'):      # Windows only (the variable is for tests): see hosttree.py
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import hosttree
+else:
+    hosttree = None
 
 MAGIC = b'HAR#$%&@'
 
@@ -46,11 +51,33 @@ def main(argv):
     out = argv[1] if not ls else None
     rx = re.compile(argv[2]) if len(argv) > 2 else None
     total = 0; done = {}
+    tree = hosttree.open_tree(out) if hosttree and not ls else None       # Windows: modes, symlinks and unsafe names go to a manifest
     for name, head, raw, stored, data, link in records(d):
         m = mode_of(head); kind = 'd' if m and m & 0xF000 == 0x4000 else 'l' if m and m & 0xF000 == 0xA000 else 'f'
         if ls: print('%s %o %9d %9d %s' % (kind, m or 0, raw, stored, name)); continue
         if rx and not rx.search(name): continue
         if name.strip('/') == '': continue
+        if tree is not None:
+            g = name.strip('/')
+            if kind == 'd': tree.mkdir(g, 0o755); continue
+            if link is not None:
+                tgt = tree.get(link.lstrip('/'), True)
+                if kind == 'l' or not (tgt and tgt[2] is None and os.path.isfile(tree.host(link.lstrip('/')))): tree.symlink(g, link)
+                else: tree.hardlink(g, link.lstrip('/'))
+                continue
+            blob = unpack(d, name, raw, stored, data) if stored else b''
+            if kind == 'l': tree.symlink(g, blob.decode())
+            else:
+                part = done.get(name, 0); more = 0 < part < raw
+                dest = tree.host(g, follow=more)
+                if not more and os.path.lexists(dest):
+                    tree.detach(dest)                    # same effect as the chmod 0600 + unlink below on the other names of a hard-linked file
+                    os.unlink(dest)
+                with open(dest, 'ab' if more else 'wb') as f: f.write(blob)
+                done[name] = (part if more else 0) + len(blob)
+                tree.set_file(g, (m or 0o644) & 0o7777)
+            total += len(blob)
+            continue
         dest = os.path.join(out, name.lstrip('/'))
         if kind == 'd': os.makedirs(dest, exist_ok=True); os.chmod(dest, 0o755); continue
         os.makedirs(os.path.dirname(dest), exist_ok=True)
@@ -73,6 +100,7 @@ def main(argv):
             done[name] = (part if 0 < part < raw else 0) + len(blob)
             os.chmod(dest, (m or 0o644) & 0o7777)
         total += len(blob)
+    if tree is not None: tree.save()
     if not ls: print('extraído: %d bytes' % total)
 
 if __name__ == '__main__': main(sys.argv[1:])

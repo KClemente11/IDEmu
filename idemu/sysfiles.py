@@ -130,7 +130,7 @@ def _extract_mgu7(out, prog):
     from . import catalog, mgu7
     psdz = catalog.effective_psdz('mgu7')
     pkgs = mgu7.required_packages(psdz)
-    har = [sys.executable, '-I', os.path.join(mgu7.TOOLS, 'har.py')]
+    har = mgu7.tool_cmd('har.py')
     root = os.path.join(out, 'root'); os.makedirs(root)
     for i, f in enumerate(pkgs):
         kern = os.path.basename(f).startswith('swfl_' + mgu7.KERNEL_PKG)

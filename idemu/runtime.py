@@ -569,7 +569,7 @@ class Runtime:
             try:
                 p = subprocess.Popen(*a, **kw)
             finally:
-                if hasattr(out, 'close'): out.close()      # o filho tem a própria cópia do log; no Windows a nossa trancaria o arquivo
+                if self.native and hasattr(out, 'close'): out.close()      # Windows: o filho tem a própria cópia do log; a nossa trancaria o arquivo
             if self.native:
                 from . import winproc
                 winproc.contain(p)                          # QEMU e renderizador morrem junto com o IDEmu, mesmo se a janela for fechada
@@ -608,8 +608,8 @@ class Runtime:
                 except Exception: pass
         self.q = self.gl = None
         fm, self._fm = self._fm, None
-        if fm:
-            try: fm.close()                                # libera frame.rgb (no Windows o mapeamento tranca o arquivo)
+        if fm and self.native:
+            try: fm.close()                                # Windows: libera frame.rgb (o mapeamento tranca o arquivo)
             except Exception: pass
 
     # ---------- status ----------
@@ -628,7 +628,7 @@ class Runtime:
 
     # ---------- quadro de vídeo ----------
     def _map(self):
-        if self.stop_ev.is_set() or self.state in ('stopped', 'error'): return None      # parado: não volta a mapear (e trancar) o frame.rgb
+        if self.native and (self.stop_ev.is_set() or self.state in ('stopped', 'error')): return None      # Windows, parado: não volta a mapear (e trancar) o frame.rgb
         if self._fm is None:
             try:
                 with open(self.frame_path, 'rb') as f:

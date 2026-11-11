@@ -82,7 +82,7 @@ Pass `--iscc C:\path\to\ISCC.exe` if the compiler is outside its normal install 
 
 ## Native Windows installer
 
-The native edition runs iDrive 4 (CIC High) and iDrive 6 (NBT Evo) without WSL. It includes Windows builds of QEMU for both boards and the Evo OpenGL renderer. The app keeps generated images, settings, and logs under `%LOCALAPPDATA%\IDEmu`. Evo requires a Windows OpenGL driver that supports OpenGL 2.1 and framebuffer objects.
+The native edition runs iDrive 4 (CIC High), iDrive 6 (NBT Evo) and iDrive 7 (MGU) without WSL. It includes Windows builds of QEMU for the three machines and the Evo and iDrive 7 OpenGL renderers. The app keeps generated images, settings, and logs under `%LOCALAPPDATA%\IDEmu`. Evo requires a Windows OpenGL driver that supports OpenGL 2.1 and framebuffer objects.
 
 Open **System Files** and validate your PSdZData folder. The default is `C:\BMW\PSdZData`. For CIC, put `swfl_000003a6.bin.008_090_002` and `swfl_00000417.bin.008_090_002` in `C:\BMW\PSdZData\CIC\swe\swfl`, or select the two files in System Files. Create an **iDrive 4 (CIC)** environment, then choose **Build** and **Start**. CIC displays its 1280 × 480 interface through the web app and accepts rotor and button input.
 
@@ -96,7 +96,22 @@ bash tools/qemu/build-windows-native.sh /path/to/qemu-11.1.2.tar.xz
 Then build Setup from Windows PowerShell using the existing PyInstaller and Inno Setup tools.
 
 ```powershell
-.\.build-tools\Scripts\python.exe .\build_installer.py --backend native --version 0.1.3 --output-dir .\dist\native-installer
+.\.build-tools\Scripts\python.exe .\build_installer.py --backend native --version 0.1.5 --output-dir .\dist\native-installer-built-by-you
 ```
 
-`IDEmu-Native-Setup.exe` installs alongside the WSL edition. The update shortcut looks for the native installer asset in the same repository. The native runtime supports cold boot for iDrive 4 and 6. The WSL edition also supports iDrive 5 and provides snapshots and guest SSH for Evo.
+### iDrive 7
+
+The native build carries the iDrive 7 (MGU) runtime when `tools/qemu/build-windows-native.sh` produced `qemu-system-x86_64.exe`, `glhost7.exe` and `bin/windows/qemu-share`. It appears in **New environment** only when those files are installed. It needs a graphics driver with OpenGL 4.1 and about 8 GB of free space under `%LOCALAPPDATA%\IDEmu\mgu7` while the image is built. It boots cold on every start and takes a few minutes to show its first screen; snapshots are not available.
+
+It has booted to the HMI on Windows 11 with an NVIDIA driver. Input, the coding editor, the rear-seat (RSE) role and System Files have not been exercised on Windows yet.
+
+`glhost7.exe` writes the first 80 guest commands of each run to `logs/renderer.log`, and a `fault` or `crash` line (exception, module, guest command) if it fails.
+
+Differences from macOS, all behind `sys.platform == 'win32'` or `#ifdef _WIN32`:
+
+* The command ring between the guest and `glhost7.exe` is a named file mapping (`src/qemu/idemu-shm.c`) and the QEMU serial ports and monitor are local TCP ports.
+* NTFS cannot hold the head unit's Linux root as plain files (no execute bit, symlinks need a privilege, names differing only in case collide). The HAR extractor writes a manifest beside the extracted folder (`tools/mgu/hosttree.py`) and `mkext2.py` reads it back. `tests/test_mgu7_windows.py` checks that this gives the same image as the plain folder used on macOS.
+* The installed app has no `python.exe`, so it runs the `tools/mgu` scripts itself (`IDEmu.exe --run-tool`).
+* `glhost7.c` redefines `setjmp` after its last `#include` so that `longjmp` does not unwind the stack. MinGW's default unwinds through SEH, which crashed inside `ntdll.dll` on the guest's first message.
+
+`IDEmu-Native-Setup.exe` installs alongside the WSL edition. The update shortcut looks for the native installer asset in the same repository. The native runtime supports cold boot for iDrive 4, 6 and 7. The WSL edition also supports iDrive 5 and provides snapshots and guest SSH for Evo.

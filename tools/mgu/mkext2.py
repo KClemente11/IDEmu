@@ -10,6 +10,11 @@ Uso: mkext2.py PASTA imagem.img TAMANHO_MB [--root-owner]
   * o tamanho da imagem deve ser potência de 2 se for usada como cartão SD no QEMU.
 """
 import os, sys, stat, struct, time
+if sys.platform == 'win32' or os.environ.get('IDEMU_TREE_MANIFEST'):      # Windows only (the variable is for tests): see hosttree.py
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import hosttree
+else:
+    hosttree = None
 
 BS = 4096
 INODE_SIZE = 128
@@ -219,9 +224,66 @@ def build(root, path, size_mb):
         st = os.lstat(dirpath)
         img.put_inode(ino_dir, stat.S_IFDIR | (st.st_mode & 0o7777), len(blocks_data) * BS, (len(blks) + len(extra)) * (BS // 512), ib, 2 + subdirs, st.st_mtime)
 
+    def walk_manifest(tree, kids, gdir, hrel, ino_dir, parent_ino, mode):
+        """Windows: the same walk, with names, modes and symlinks taken from the manifest the extractor wrote (hosttree.py)."""
+        dirpath = os.path.join(tree.root, *hrel.split('/')) if hrel else tree.root
+        found = {}                                   # guest name -> (host path or None, host_rel, manifest entry or None)
+        for hname in os.listdir(dirpath):
+            rel = hrel + '/' + hname if hrel else hname
+            g = tree.guest_name(rel)
+            found[g.rpartition('/')[2] if g else hname] = (os.path.join(dirpath, hname), rel, tree.ent.get(g) if g else None)
+        for name, e in kids.get(gdir, {}).items():
+            if e[2] is not None: found[name] = (None, None, e)          # symlinks live only in the manifest
+        ents = [('.', ino_dir, 2), ('..', parent_ino, 2)]
+        subdirs = 0; now = time.time()
+        for name in sorted(found):
+            full, rel, e = found[name]
+            if len(name.encode()) > 255: print('nome longo demais, ignorado:', name); continue
+            if e is not None and e[2] is not None:
+                tgt = e[2].encode(); ino = img.new_inode()
+                if len(tgt) <= 59:
+                    img.put_inode(ino, stat.S_IFLNK | 0o777, len(tgt), 0, tgt.ljust(60, b'\0'), 1, now)
+                else:
+                    b = img.alloc(1)[0]; img.f.seek(b * BS); img.f.write(tgt.ljust(BS, b'\0'))
+                    ib, _ = img.block_ptrs([b]); img.put_inode(ino, stat.S_IFLNK | 0o777, len(tgt), BS // 512, ib, 1, now)
+                ents.append((name, ino, 7)); continue
+            st = os.lstat(full); bits = e[1] if e is not None and e[1] is not None else None
+            if stat.S_ISDIR(st.st_mode):
+                ino = img.new_inode(True); subdirs += 1
+                walk_manifest(tree, kids, gdir + '/' + name if gdir else name, rel, ino, ino_dir, (bits & 0o7777) if bits is not None else 0o755)
+                ents.append((name, ino, 2))
+            elif stat.S_ISREG(st.st_mode):
+                key = (st.st_dev, st.st_ino)
+                if key in ino_of and st.st_nlink > 1 and st.st_ino:
+                    ino = ino_of[key]; links[ino] += 1
+                else:
+                    ino = img.new_inode(); size, n512, ib = write_file(full, st)
+                    ino_of[key] = ino; links[ino] = 1; total[0] += size
+                    img.put_inode(ino, stat.S_IFREG | ((bits & 0o7777) if bits is not None else 0o644), size, n512, ib, 1, st.st_mtime)
+                ents.append((name, ino, 1))
+        blocks_data = []; cur = bytearray()
+        for name, ino, ft in ents:
+            nb = name.encode(); rl = (8 + len(nb) + 3) & ~3
+            if len(cur) + rl > BS:
+                blocks_data.append(cur); cur = bytearray()
+            cur += struct.pack('<IHBB', ino, rl, len(nb), ft) + nb + b'\0' * (rl - 8 - len(nb))
+        blocks_data.append(cur)
+        for b in blocks_data:
+            p = 0; lastp = 0
+            while p < len(b):
+                rl = struct.unpack_from('<H', b, p + 4)[0]; lastp = p; p += rl
+            struct.pack_into('<H', b, lastp + 4, BS - lastp)
+            b.extend(b'\0' * (BS - len(b)))
+        blks = img.alloc(len(blocks_data))
+        img.write_blocks(blks, b''.join(bytes(b) for b in blocks_data))
+        ib, extra = img.block_ptrs(blks)
+        img.put_inode(ino_dir, stat.S_IFDIR | mode, len(blocks_data) * BS, (len(blks) + len(extra)) * (BS // 512), ib, 2 + subdirs, os.lstat(dirpath).st_mtime)
+
     img.dirs[0] += 1
     img._iset(0, 1)                                  # inode 2 (raiz): já contado entre os 10 reservados
-    walk(root, 2, 2)
+    tree = hosttree.open_tree(root) if hosttree else None
+    if tree is not None: walk_manifest(tree, tree.children(), '', '', 2, 2, 0o755)
+    else: walk(root, 2, 2)
     # contagem de elos dos arquivos com mais de um nome
     for ino, n in links.items():
         if n > 1:

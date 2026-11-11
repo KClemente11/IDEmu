@@ -17,6 +17,12 @@ def native_evo_ready():
 def native_cic_ready():
     return sys.platform == 'win32' and os.path.isfile(os.path.join(NATIVE_BIN, 'qemu-system-sh4.exe'))
 
+def native_mgu7_ready():
+    return sys.platform == 'win32' and all(
+        os.path.isfile(os.path.join(NATIVE_BIN, name))
+        for name in ('qemu-system-x86_64.exe', 'glhost7.exe', os.path.join('qemu-share', 'bios-256k.bin'))
+    )
+
 def runtime_root():
     return os.path.join(STATE_DIR, 'run') if sys.platform == 'win32' else '/tmp/idemu-%d' % os.getuid()
 
@@ -163,7 +169,7 @@ def backend_supported(kind):
         qemu = os.path.join(ROOT_DIR, 'bin', 'qemu-system-sh4')
         return kind == 'cic' and os.path.isfile(qemu) and os.access(qemu, os.X_OK)
     if sys.platform == 'win32':
-        return kind == 'cic' and native_cic_ready()
+        return (kind == 'cic' and native_cic_ready()) or (kind == 'mgu7' and native_mgu7_ready())
     return kind in DIRECT_BACKENDS
 
 for _g in GENERATIONS:

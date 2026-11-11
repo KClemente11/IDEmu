@@ -3,12 +3,13 @@ O HMI do banco traseiro (HmiMain3D, RSE_HIGH_LEFT) desenha pela ponte GL (ttyS1)
 import glob, mmap, os, re, shutil, socket, struct, subprocess, sys, threading, time, zlib
 from . import runtime, coding7
 from .catalog import (MGU7_APP_IDS as APP_IDS, MGU7_DATA_IDS as DATA_IDS, MGU7_APP_VER as APP_VER,
-                      MGU7_KERNEL_PKG as KERNEL_PKG, MGU7_KERNEL_VER as KERNEL_VER)
+                      MGU7_KERNEL_PKG as KERNEL_PKG, MGU7_KERNEL_VER as KERNEL_VER, STATE_DIR, NATIVE_BIN)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOOLS = os.path.join(ROOT, 'tools', 'mgu')
 GUEST = os.path.join(ROOT, 'idemu', 'guest7')
-OUT = os.path.join(ROOT, 'mgu7')
+NATIVE = sys.platform == 'win32'                  # Windows nativo: tudo o que muda fica atrás desta marca; macOS e Linux seguem como antes
+OUT = os.path.join(STATE_DIR, 'mgu7') if NATIVE else os.path.join(ROOT, 'mgu7')      # no Windows a pasta do app não recebe dados
 KERNEL_SKIP = 480        # /ias_rsu = 480 B de cabeçalho + bzImage
 IMG_MB = 4096
 # serviços SOME/IP do head unit que o HU_HMI espera (tools/mgu/gen_fakesvc.py -> /etc/idemu/fakesvc.tab; campo=hex troca o valor padrão)
@@ -47,7 +48,11 @@ def image_ready():
     if not (os.path.isfile(OUT + '/root.img') and os.path.isfile(OUT + '/bzImage')): return False
     try: return open(OUT + '/stamp').read().strip() == guest_stamp()
     except OSError: return False
-def glhost_path(): return os.path.join(ROOT, 'bin', 'glhost7')
+def glhost_path(): return os.path.join(NATIVE_BIN, 'glhost7.exe') if NATIVE else os.path.join(ROOT, 'bin', 'glhost7')
+def tool_cmd(script):
+    """Linha de comando de um utilitário de tools/mgu. O app congelado do Windows não tem python.exe: o próprio executável roda o script (tools/windows_exe.py)."""
+    if getattr(sys, 'frozen', False): return [sys.executable, '--run-tool', os.path.join(TOOLS, script)]
+    return [sys.executable, '-I', os.path.join(TOOLS, script)]
 
 def swfl_dir(psdz): return os.path.join(psdz, 'swe', 'swfl')
 def pick(psdz, sid, ver=None):
@@ -63,6 +68,7 @@ def required_packages(psdz):
 def build(psdz, log=print, progress=lambda p, s: None):
     """Extrai app + data (HAR) para uma pasta de trabalho, aplica o overlay do IDEmu, os patches e grava mgu7/root.img + mgu7/bzImage (≈ 3,3 GB temporários)."""
     if not psdz: raise RuntimeError('escolha a pasta da PSdZData nas configurações')
+    if NATIVE: return _build_windows(psdz, log, progress)
     work = os.path.join(OUT, 'work'); root = os.path.join(work, 'root')
     shutil.rmtree(work, ignore_errors=True); os.makedirs(root)
     try:
@@ -105,13 +111,90 @@ def build(psdz, log=print, progress=lambda p, s: None):
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
+# Windows: o NTFS não guarda a raiz do Linux como ela é (sem bit de execução, symlink exige privilégio, nomes que só diferem na caixa colidem).
+# O extrator grava então um manifesto ao lado da pasta (tools/mgu/hosttree.py) e o mkext2 o lê de volta. A sequência é a mesma de build().
+OVERLAY_LINKS = {'etc/systemd/system/winston.service': '/dev/null',                       # symlinks do rse_overlay: o Git do Windows os grava como arquivos de texto
+                 'etc/systemd/system/multi-user.target.wants/idemu-diag.service': '/lib/systemd/system/idemu-diag.service'}
+_TXT = {'encoding': 'utf-8', 'newline': '\n'} if NATIVE else {}                          # texto que vai para o guest: sem CRLF nem a página de código do Windows
+
+def _overlay_windows(tree):
+    base = os.path.join(TOOLS, 'rse_overlay')
+    for dp, dn, fn in os.walk(base):
+        rel = os.path.relpath(dp, base).replace('\\', '/'); rel = '' if rel == '.' else rel
+        if rel: tree.mkdir(rel)
+        for f in sorted(fn):
+            g = rel + '/' + f if rel else f; src = os.path.join(dp, f)
+            if g in OVERLAY_LINKS: tree.symlink(g, OVERLAY_LINKS[g]); continue
+            if os.path.islink(src): tree.symlink(g, os.readlink(src).replace('\\', '/')); continue
+            data = open(src, 'rb').read().replace(b'\r\n', b'\n')                         # o checkout do Windows pode trazer CRLF
+            with open(tree.host(g), 'wb') as o: o.write(data)
+            tree.set_file(g, 0o755 if data.startswith(b'#!') else 0o644, follow=True)
+
+def _build_windows(psdz, log, progress):
+    if TOOLS not in sys.path: sys.path.insert(0, TOOLS)
+    import hosttree
+    hidden = {'creationflags': subprocess.CREATE_NO_WINDOW} if NATIVE else {}
+    def run(cmd): return subprocess.run(cmd, capture_output=True, text=True, errors='replace', **hidden)
+    def lf(path):
+        with open(path, 'rb') as f: d = f.read()
+        if b'\r\n' in d:
+            with open(path, 'wb') as f: f.write(d.replace(b'\r\n', b'\n'))
+    work = os.path.join(OUT, 'work'); root = os.path.join(work, 'root')
+    shutil.rmtree(hosttree.long_path(work), ignore_errors=True); os.makedirs(root)
+    try:
+        har = tool_cmd('har.py')
+        n = len(APP_IDS) + len(DATA_IDS)
+        for i, sid in enumerate(APP_IDS + DATA_IDS):
+            kind = 'app' if sid in APP_IDS else 'data'
+            progress(5 + int(40 * i / n), 'Extraindo o sistema do RSE' if kind == 'app' else 'Extraindo os dados do HMI')
+            f = pick(psdz, '0000' + sid, APP_VER); log('%s %s' % (kind, os.path.basename(f)))
+            r = run(har + [f, root])
+            if r.returncode: raise RuntimeError('falha ao extrair %s: %s' % (os.path.basename(f), (r.stderr or r.stdout)[-200:]))
+        progress(70, 'Extraindo o kernel')
+        k = pick(psdz, KERNEL_PKG, KERNEL_VER); log('kernel ' + os.path.basename(k))
+        r = run(har + [k, os.path.join(work, 'k'), r'^/ias_rsu$'])
+        ias = os.path.join(work, 'k', 'ias_rsu')
+        if r.returncode or not os.path.isfile(ias): raise RuntimeError('kernel (ias_rsu) não encontrado no pacote do RSU')
+        with open(ias, 'rb') as f: f.seek(KERNEL_SKIP); kb = f.read()
+        if kb[0x202:0x206] != b'HdrS': raise RuntimeError('o kernel extraído não é um bzImage')
+        progress(75, 'Aplicando os ajustes do emulador'); log('overlay')
+        tree = hosttree.Tree(root)
+        _overlay_windows(tree)
+        ld = tree.host('lib/libdl-2.27.so', parents=False)        # libdl do firmware, copiada para a pasta do IDEmu (não vai no repositório)
+        if os.path.isfile(ld):
+            e = tree.get('lib/libdl-2.27.so', True)
+            shutil.copyfile(ld, tree.host('usr/lib/idemu/libdl.so.2')); tree.set_file('usr/lib/idemu/libdl.so.2', (e[1] if e and e[1] else 0o755), follow=True)
+        with open(TOOLS + '/idemu-init.sh', 'rb') as f: init = f.read().replace(b'\r\n', b'\n')
+        with open(tree.host('idemu-init'), 'wb') as f: f.write(init)
+        tree.set_file('idemu-init', 0o755, follow=True)
+        for src, dst in GUEST_FILES.items():
+            shutil.copyfile(os.path.join(GUEST, src), tree.host(dst)); tree.set_file(dst, 0o755, follow=True)
+        tree.mkdir('etc/idemu')
+        tab = tree.host('etc/idemu/fakesvc.tab')
+        r = run(tool_cmd('gen_fakesvc.py') + [tree.host('etc/oap/someip/someip-interfaces.json', parents=False), tab] + FAKE_SERVICES)
+        if r.returncode: raise RuntimeError('gen_fakesvc: ' + (r.stderr or r.stdout)[-300:])
+        lf(tab); tree.set_file('etc/idemu/fakesvc.tab', 0o644, follow=True)
+        tree.save()                                                # os utilitários abaixo leem o manifesto
+        allow_fake_offers(root, 10007)
+        r = run(tool_cmd('patch_rse.py') + [root]); log(r.stdout.strip())
+        if r.returncode: raise RuntimeError('patch do RSE: ' + (r.stderr or r.stdout)[-300:])
+        r = run(tool_cmd('gen_coding7.py') + [tree.host('usr/bin/HmiMain3D', parents=False), OUT + '/coding7.json']); log(r.stdout.strip())
+        if r.returncode: log('codificação: ' + (r.stderr or r.stdout)[-200:])
+        progress(85, 'Gravando a imagem do sistema'); log('imagem')
+        tmp = OUT + '/root.img.tmp'
+        r = run(tool_cmd('mkext2.py') + [root, tmp, str(IMG_MB)]); log(r.stdout.strip()[-200:])
+        if r.returncode: raise RuntimeError('mkext2: ' + (r.stderr or r.stdout)[-300:])
+        os.replace(tmp, OUT + '/root.img'); open(OUT + '/bzImage', 'wb').write(kb); open(OUT + '/stamp', 'w').write(guest_stamp())
+    finally:
+        shutil.rmtree(hosttree.long_path(work), ignore_errors=True)
+
 def allow_fake_offers(root, uid):
     """O vsomeip só deixa um usuário oferecer os serviços da sua política (etc/vsomeip/<uid>_<gid>/vsomeip_security.json). O `idemu-fakesvc` roda como o usuário do
     NodeStateManager (sin_nsm, 10007): acrescenta a ele a oferta dos serviços da tabela falsa (etc/idemu/fakesvc.tab)."""
     import json
     path = '%s/etc/vsomeip/%d_%d/vsomeip_security.json' % (root, uid, uid)
-    ids = ['0x%s' % l.split()[1] for l in open(root + '/etc/idemu/fakesvc.tab') if l.startswith('S ')]
-    d = json.load(open(path))
+    ids = ['0x%s' % l.split()[1] for l in open(root + '/etc/idemu/fakesvc.tab', **_TXT) if l.startswith('S ')]
+    d = json.load(open(path, **_TXT))
     for pol in d['security']['policies']:
         c = pol.get('credentials') or {}
         if str(c.get('uid')) == str(uid) and 'allow' in pol:
@@ -120,17 +203,23 @@ def allow_fake_offers(root, uid):
                 if not any(o.get('service', '').lower() == i for o in offers): offers.append({'instance': 'any', 'service': i})
             break
     else: raise RuntimeError('política do uid %d não encontrada em %s' % (uid, path))
-    json.dump(d, open(path, 'w'), indent=4)
+    json.dump(d, open(path, 'w', **_TXT), indent=4)
     # o roteador (vsomeipd) confere a política do cliente na configuração global: copia para lá a política do usuário já com as ofertas novas
-    gpath = root + '/etc/vsomeip/vsomeip_security.json'; g = json.load(open(gpath)); mine = [p for p in d['security']['policies'] if str((p.get('credentials') or {}).get('uid')) == str(uid)][0]
+    gpath = root + '/etc/vsomeip/vsomeip_security.json'; g = json.load(open(gpath, **_TXT)); mine = [p for p in d['security']['policies'] if str((p.get('credentials') or {}).get('uid')) == str(uid)][0]
     pols = [p for p in g['security']['policies'] if str((p.get('credentials') or {}).get('uid')) != str(uid)]
     g['security']['policies'] = pols + [mine]
-    json.dump(g, open(gpath, 'w'), indent=4)
+    json.dump(g, open(gpath, 'w', **_TXT), indent=4)
 
 QEMU_OWN = os.path.join(ROOT, 'bin', 'qemu-system-x86_64')       # QEMU 11.1.2 do IDEmu: igual ao oficial + o dispositivo idemu-shm (src/qemu/idemu-shm.c)
 QEMU_SHARE = os.path.join(ROOT, 'bin', 'qemu-share')              # firmware (BIOS, VGA) que o QEMU próprio procura
+if NATIVE:
+    QEMU_OWN = os.path.join(NATIVE_BIN, 'qemu-system-x86_64.exe'); QEMU_SHARE = os.path.join(NATIVE_BIN, 'qemu-share')
 SHM_BYTES = 128 << 20                                              # SHM_SIZE de src/mgu/proto.h
 def find_qemu():
+    if NATIVE:                                                      # só o QEMU do IDEmu serve: o canal gráfico do Windows é a memória compartilhada
+        p = os.environ.get('IDEMU_QEMU_X86') or QEMU_OWN
+        if os.path.exists(p): return p
+        raise RuntimeError('The iDrive 7 runtime (qemu-system-x86_64.exe) is missing from this installation.')
     for p in (os.environ.get('IDEMU_QEMU_X86'), QEMU_OWN, shutil.which('qemu-system-x86_64'), '/opt/homebrew/bin/qemu-system-x86_64', '/usr/local/bin/qemu-system-x86_64'):
         if p and os.path.exists(p): return p
     raise RuntimeError('qemu-system-x86_64 não encontrado: instale com "brew install qemu"')
@@ -138,6 +227,7 @@ def has_shm(qemu):
     """O QEMU do IDEmu (bin/qemu-system-x86_64) tem o dispositivo idemu-shm: o canal gráfico vai por memória compartilhada (≈ 100x mais rápido que a serial)."""
     return os.path.realpath(qemu) == os.path.realpath(QEMU_OWN) and os.path.isdir(QEMU_SHARE) and not os.environ.get('IDEMU_NO_SHM')
 def shm_unlink(name):
+    if NATIVE: return                                               # o mapeamento com nome do Windows some com o último processo que o abriu
     try:
         import ctypes; ctypes.CDLL(None, use_errno=True).shm_unlink(name.encode())
     except Exception: pass
@@ -151,7 +241,20 @@ def clone_file(src, dst):
     """Cópia instantânea no APFS (clonefile); cópia comum nos demais sistemas de arquivos."""
     try: os.unlink(dst)
     except OSError: pass
+    if NATIVE: shutil.copyfile(src, dst); return                    # não existe `cp` no Windows
     if subprocess.run(['cp', '-c', src, dst], capture_output=True).returncode: shutil.copyfile(src, dst)
+
+def _stream(endpoint):
+    """Socket para um canal do QEMU: caminho de socket unix, ou (host, porta) no Windows."""
+    if isinstance(endpoint, tuple):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM); s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1); return s
+    return socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+def _chardev(name, endpoint):
+    if isinstance(endpoint, tuple): return 'socket,id=%s,host=%s,port=%d,server=on,wait=off,nodelay=on' % (name, endpoint[0], endpoint[1])
+    return 'socket,id=%s,path=%s,server=on,wait=off' % (name, endpoint)
+def _monitor(endpoint):
+    if isinstance(endpoint, tuple): return 'tcp:%s:%d,server=on,wait=off' % endpoint
+    return 'unix:%s,server,nowait' % endpoint
 
 class Mgu7Runtime(runtime.Runtime):
     kind = 'mgu7'; disp = (1920, 1080)
@@ -178,6 +281,7 @@ class Mgu7Runtime(runtime.Runtime):
     def _mark(self, name): self.marks[name] = round(time.time() - self.t0, 1)
     # ---------- snapshot (boot rápido): estado da VM (savevm do QEMU, dentro do qcow2 de escrita) + o fluxo GL gravado (o glhost7 o reexecuta no Mac) ----------
     def snap_capable(self):
+        if NATIVE: return False                                     # Windows: só boot completo (o snapshot usa sinais e o qemu-img)
         return has_shm(find_qemu()) and bool(qemu_img()) and not os.environ.get('IDEMU_NO_SNAPSHOT')
     def snap_stamps(self):
         import hashlib, json
@@ -199,7 +303,7 @@ class Mgu7Runtime(runtime.Runtime):
     def drop_snapshot(self): shutil.rmtree(self.snap_dir, ignore_errors=True)
     def hmp(self, cmd, timeout=60.0):
         """Comando do monitor do QEMU (HMP) pelo socket unix; devolve o texto até o próximo prompt."""
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(timeout)
+        s = _stream(self.mon_path); s.settimeout(timeout)
         try:
             s.connect(self.mon_path); buf = b''
             while not buf.endswith(b'(qemu) '): buf += s.recv(4096)
@@ -264,8 +368,10 @@ class Mgu7Runtime(runtime.Runtime):
     def _boot_thread(self):
         try:
             gsock = os.path.join(self.run, 'gl.sock'); csock = os.path.join(self.run, 'con.sock'); isock = os.path.join(self.run, 'inp.sock')
+            if NATIVE: gsock, csock, isock, self.mon_path = runtime._loopback_endpoints(4)       # o Windows não tem socket unix para as seriais: TCP local
             hl = open(os.path.join(self.logd, 'renderer.log'), 'wb')
             qemu = find_qemu(); self.shm = ('/idemu-gl-%d-%d' % (os.getpid(), int(time.time()) % 100000)) if has_shm(qemu) else None
+            if NATIVE and not self.shm: raise RuntimeError('The iDrive 7 runtime on Windows needs the IDEmu build of QEMU and its qemu-share folder.')
             if self.shm: shm_unlink(self.shm)
             capable = self.snap_capable(); restore = capable and not self._cold and self.snap_valid(); self._restored = restore
             self.overlay = os.path.join(self.run, 'disk.qcow2') if capable else None
@@ -286,10 +392,10 @@ class Mgu7Runtime(runtime.Runtime):
                    '-append', 'console=ttyS2,115200 root=/dev/mmcblk0 rootfstype=ext4 rw rootwait loglevel=4 nokaslr sdhci_pci.power_default_on=1 init=/idemu-init' + (' idemu.role=hu' if self.role == 'hu' else '') + (' idemu.coding=1' if self.coding_blob else ''),
                    '-device', 'sdhci-pci'] + disk + ['-device', 'sd-card,drive=sd0',
                    '-display', 'none', '-nic', 'none', '-rtc', 'base=localtime',            # o relógio do guest mostra a hora do Mac
-                   '-chardev', 'socket,id=inp,path=%s,server=on,wait=off' % isock, '-serial', 'chardev:inp',        # ttyS0: entrada (toque), lida pelo idemu-wl
-                   '-chardev', 'socket,id=gl,path=%s,server=on,wait=off' % gsock, '-serial', 'chardev:gl',
-                   '-chardev', 'socket,id=con,path=%s,server=on,wait=off' % csock, '-serial', 'chardev:con',
-                   '-monitor', 'unix:%s,server,nowait' % self.mon_path, '-S'] + (['-gdb', 'tcp:127.0.0.1:%d' % port] if not restore else ['-loadvm', SNAP_TAG]) + (['-device', 'idemu-shm,shm-name=%s,size=%d' % (self.shm, SHM_BYTES)] if self.shm else [])
+                   '-chardev', _chardev('inp', isock), '-serial', 'chardev:inp',        # ttyS0: entrada (toque), lida pelo idemu-wl
+                   '-chardev', _chardev('gl', gsock), '-serial', 'chardev:gl',
+                   '-chardev', _chardev('con', csock), '-serial', 'chardev:con',
+                   '-monitor', _monitor(self.mon_path), '-S'] + (['-gdb', 'tcp:127.0.0.1:%d' % port] if not restore else ['-loadvm', SNAP_TAG]) + (['-device', 'idemu-shm,shm-name=%s,size=%d' % (self.shm, SHM_BYTES)] if self.shm else [])
             ql = open(os.path.join(self.logd, 'qemu.log'), 'wb')
             if restore:
                 self.step = 'Restaurando o estado salvo'; self.pct = 10
@@ -314,7 +420,7 @@ class Mgu7Runtime(runtime.Runtime):
                 self._spawn('gl', glcmd, stdout=hl, stderr=hl, env=genv)
                 self._spawn('q', cmd, stdout=ql, stderr=subprocess.STDOUT)       # parado (-S) até o tscfix liberar
                 tl = open(os.path.join(self.logd, 'tscfix.log'), 'wb')
-                self._spawn('tscfix', [sys.executable, '-I', TOOLS + '/tscfix.py', str(port)], stdout=tl, stderr=subprocess.STDOUT)
+                self._spawn('tscfix', tool_cmd('tscfix.py') + [str(port)], stdout=tl, stderr=subprocess.STDOUT)
                 threading.Thread(target=self._console_thread, args=(csock,), daemon=True).start()
                 threading.Thread(target=self._input_thread, args=(isock,), daemon=True).start()
                 self.step = 'Iniciando o sistema do carro'; self.pct = 5
@@ -344,7 +450,7 @@ class Mgu7Runtime(runtime.Runtime):
         s = None
         for _ in range(600):
             if self.stop_ev.is_set(): return
-            try: s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.connect(path); break
+            try: s = _stream(path); s.connect(path); break
             except OSError: s.close(); s = None; time.sleep(0.1)
         if s is None: return
         self._con = s; log = open(os.path.join(self.logd, 'console.log'), 'wb'); tail = b''
@@ -361,7 +467,7 @@ class Mgu7Runtime(runtime.Runtime):
         """Liga ao socket da serial de entrada (ttyS0 do guest); só escreve nele (o guest não manda nada de volta)."""
         for _ in range(600):
             if self.stop_ev.is_set(): return
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s = _stream(path)
             try: s.connect(path); break
             except OSError: s.close(); time.sleep(0.1)
         else: return

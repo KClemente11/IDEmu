@@ -1,3 +1,3 @@
-IDEmu Native boots iDrive 4 (CIC High) and iDrive 6 (NBT Evo) directly on Windows. It looks for firmware under C:\BMW\PSdZData, and you can select another location in System Files.
+IDEmu Native boots iDrive 4 (CIC High), iDrive 6 (NBT Evo) and iDrive 7 (MGU) directly on Windows. iDrive 7 needs a graphics driver with OpenGL 4.1. It looks for firmware under C:\BMW\PSdZData, and you can select another location in System Files.
 
 Setup installs for your Windows account. Your firmware, environments, and settings are stored outside the application directory. The separate WSL2 edition can run its supported generations using its existing data folder.

@@ -8,14 +8,15 @@ firmware packages, IDEmu builds the disk images locally.
 
 ## Windows standalone
 
-**IDEmu Native** runs iDrive 4 (CIC High) and iDrive 6 (NBT Evo) on Windows x64 without WSL. The installer bundles the Windows app, QEMU,
-the Evo OpenGL renderer, and their runtime libraries. Bring your own BMW firmware. Evo requires a graphics driver with OpenGL 2.1 and
-framebuffer object support.
+**IDEmu Native** runs iDrive 4 (CIC High), iDrive 6 (NBT Evo) and iDrive 7 (MGU) on Windows x64 without WSL. The installer bundles the
+Windows app, QEMU, the OpenGL renderers, and their runtime libraries. Bring your own BMW firmware. Evo requires a graphics driver with
+OpenGL 2.1 and framebuffer object support; iDrive 7 requires OpenGL 4.1.
 
 1. Run `IDEmu-Native-Setup.exe` from a published [GitHub release](https://github.com/KClemente11/IDEmu/releases) or build it locally.
 2. Open **IDEmu Native** from the Start menu. In **System Files**, validate your PSdZData folder. The default is `C:\BMW\PSdZData`.
-3. Confirm the required SWFL files, then create an **iDrive 4 (CIC)** or **iDrive 6** environment and choose **Build** and **Start**.
+3. Confirm the required SWFL files, then create an **iDrive 4 (CIC)**, **iDrive 6** or **iDrive 7** environment and choose **Build** and **Start**.
    For CIC, System Files can find `swfl_000003a6.bin.008_090_002` and `swfl_00000417.bin.008_090_002` under `C:\BMW\PSdZData\CIC\swe\swfl`.
+   iDrive 7 needs about 8 GB of free disk space while its image is built and takes a few minutes to show its first screen.
 
 The installer ships without BMW firmware. IDEmu builds the guest disk images locally and stores them with your settings and logs under
 `%LOCALAPPDATA%\IDEmu`. This edition supports cold boot, with snapshots and guest SSH disabled. The **Check for updates** Start menu shortcut
@@ -24,7 +25,8 @@ looks for the native installer in stable GitHub releases. See the [Windows guide
 ### Build the standalone installer
 
 The installer is built from this repository's Python app, web interface, and guest support files, plus Windows executables compiled from
-the pinned **QEMU 11.1.2** source with IDEmu's OMAP5 and CIC board changes and the renderer sources in `src/glhost/`. The
+the pinned **QEMU 11.1.2** source with IDEmu's OMAP5 and CIC board changes and shared-memory device, and the renderer sources in
+`src/glhost/` and `src/mgu/glhost7.c`. The
 [native runtime build script](tools/qemu/build-windows-native.sh) compiles the helpers in MSYS2 UCRT64 and stages their DLLs in `bin/windows/`.
 [PyInstaller](build_windows.py) bundles the app with those helpers, and [Inno Setup](installer/windows.iss) turns that bundle into the installer.
 

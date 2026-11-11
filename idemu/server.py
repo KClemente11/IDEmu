@@ -40,7 +40,7 @@ def runtime_available(env):
     kind = env.get('kind')
     if not catalog.backend_supported(kind):
         return False
-    if sys.platform != 'win32' or kind == 'cic':
+    if sys.platform != 'win32' or kind in ('cic', 'mgu7'):
         return True
     version = (env.get('coding') or {}).get('hmi_version') or 'id6_light'
     return version.startswith('id6') and catalog.native_evo_ready()

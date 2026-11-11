@@ -9,18 +9,24 @@ Sem eles a NM do ioclcproxy e do udpnm volta ao sono, o NodeStateManager entra e
 Cada patch troca por `ret` o início dos slots busSleepState / prepareBusSleepState / readySleepState de NetworkManagementServer.
 Uso: patch_rse.py PASTA_ROOTFS   (offsets válidos para RSE_MGU_01 030_016_002)"""
 import sys, os
+if sys.platform == 'win32' or os.environ.get('IDEMU_TREE_MANIFEST'):      # Windows only (the variable is for tests): see hosttree.py
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import hosttree
+else:
+    hosttree = None
+def host_path(root, rel): return hosttree.path(root, rel) if hosttree else os.path.join(root, rel)
 PATCHES = {'usr/bin/ioclcproxy': (0x6e070, 0x6e0c0, 0x6e1b0), 'usr/bin/udpnm': (0x18110, 0x18160, 0x18250)}
 HMI_PATCHES = [('usr/bin/HmiMain3D', 0x6e8777b, bytes.fromhex('80bdd0fdffff000f85f803000041807f25600f86dd040000'), bytes.fromhex('498b0424c6402000e9f80300009090909090909090909090')),
                ('usr/bin/HmiMain3D', 0x653b4d0, bytes.fromhex('0fb647495548'), bytes.fromhex('b801000000c3'))]
 root = sys.argv[1]
 for rel, offs in PATCHES.items():
-    p = os.path.join(root, rel); d = bytearray(open(p, 'rb').read())
+    p = host_path(root, rel); d = bytearray(open(p, 'rb').read())
     for o in offs:
         assert d[o:o + 4] == bytes.fromhex('4883ec28'), f'{rel}: prólogo inesperado em {o:#x} (versão diferente?)'
         d[o] = 0xC3
     open(p, 'wb').write(d); print('patch ok:', rel)
 for rel, off, old, new in HMI_PATCHES:
-    with open(os.path.join(root, rel), 'r+b') as f:
+    with open(host_path(root, rel), 'r+b') as f:
         f.seek(off); cur = f.read(len(old))
         assert cur == old, f'{rel}: bytes inesperados em {off:#x} ({cur.hex()}; versão diferente?)'
         f.seek(off); f.write(new)
