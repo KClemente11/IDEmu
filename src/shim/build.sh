@@ -13,8 +13,8 @@ CF=(-target armv7-none-eabi -march=armv7-a -mfloat-abi=soft -ffreestanding -fPIC
 LLD=${LLD:-$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/gcc-ld/ld.lld}
 if [ -x "$LLD" ]; then LDBIN=($LLD); else LDBIN=($PY -m ziglang ld.lld); fi
 LD=($LDBIN -shared -z max-page-size=4096 -z common-page-size=4096 -z norelro -z noseparate-code --no-rosegment --hash-style=sysv --no-eh-frame-hdr -z nognustack)
-for f in bridge gles egl dbg hook; do clang "${CF[@]}" -c $f.c -o out/$f.o; done
-$LD -soname libscreen.so.1 -o out/libscreen.so.1 out/bridge.o out/gles.o out/egl.o out/dbg.o out/hook.o -Llib -l:libc.so.3
+for f in bridge gles egl dbg hook hsfz; do clang "${CF[@]}" -c $f.c -o out/$f.o; done
+$LD -soname libscreen.so.1 -o out/libscreen.so.1 out/bridge.o out/gles.o out/egl.o out/dbg.o out/hook.o out/hsfz.o -Llib -l:libc.so.3
 echo 'int dummy_sym;' > out/empty.c; clang "${CF[@]}" -c out/empty.c -o out/empty.o
 $LD -soname libEGL.so.1 -o out/libEGL.so.1 out/empty.o -Llib -l:libc.so.3 -Lout -l:libscreen.so.1
 $LD -soname libGLESv2.so.1 -o out/libGLESv2.so.1 out/empty.o -Llib -l:libc.so.3 -Lout -l:libscreen.so.1

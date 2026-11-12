@@ -555,7 +555,12 @@ class Runtime:
             if getattr(self, 'v850', None): self.v850.bridge.car.gps = self.gps; self.v850.bridge.car.attach_can(self.can)      # dados do carro -> HMI (MOST, ponte do canal 25)
             # Canal de arquivos CAN/GPS no guest (/var/idemu/{can,gps}, UART1): ninguém no guest o consome desde que os dados chegam ao HMI pelo MOST
             # (idemu/most.py) e, ligado, ele derruba o `most` (ver docs/V850.md) -> só com IDEMU_DATA_CHANNEL=1.
-            if os.environ.get('IDEMU_DATA_CHANNEL'): self.data = DataChannel(ser1, self.can, self.gps, self); self.data.start()
+            # emulated diagnostic gateway: UDS requests from the guest come back over the same UART and are answered here (idemu/uds.py)
+            from . import builder, uds
+            self.uds = uds.UdsEmulator(uds.config_path(self.env_dir), can=self.can, log_path=os.path.join(self.logd, 'uds.log'))
+            want_uds = builder.uds_gateway_on(self.env)
+            if os.environ.get('IDEMU_DATA_CHANNEL') or want_uds:
+                self.data = DataChannel(ser1, self.can, self.gps, self, push=bool(os.environ.get('IDEMU_DATA_CHANNEL')), uds=self.uds if want_uds else None); self.data.start()
         except Exception as e:
             self.con.append('[idemu] CAN/GPS: %s' % e)
         try:
@@ -697,14 +702,36 @@ class Runtime:
         if delta: self.send_cmd('2 %d %d' % (14 if delta < 0 else 13, abs(int(delta))))
 
 class DataChannel:
-    """Entrega estado CAN/GPS ao guest pela UART1: linhas 'C ID HEX' e 'G $NMEA' (agente do guest em /fs/shim)."""
-    def __init__(self, uart_sock, can, gps, rt):
-        self.uart_sock, self.can, self.gps, self.rt = uart_sock, can, gps, rt
+    """UART1 to the guest agent (/fs/shim/agent.sh, /dev/ser5).
+    Host -> guest: 'C ID HEX' and 'G $NMEA' (CAN/GPS files, only with push=True) and 'U seq HEX' (UDS replies).
+    Guest -> host: 'Q seq SRC TGT HEX', UDS requests from the emulated diagnostic gateway (src/shim/hsfz.c), answered by uds."""
+    def __init__(self, uart_sock, can, gps, rt, push=True, uds=None):
+        self.uart_sock, self.can, self.gps, self.rt, self.push, self.uds = uart_sock, can, gps, rt, push, uds
         self.last = {}; self.dirty = {}; self.stop_ev = threading.Event(); self.lock = threading.Lock(); self.sock = None
+        self.wlock = threading.Lock()
     def start(self):
-        if self.can: self.can.on_frame(self._frame)
-        if self.gps: self.gps.on_nmea(self._nmea)
+        if self.push and self.can: self.can.on_frame(self._frame)
+        if self.push and self.gps: self.gps.on_nmea(self._nmea)
         threading.Thread(target=self._run, daemon=True).start()
+    def _send(self, text):
+        with self.wlock: self.sock.sendall(text.encode())
+    def _reader(self):
+        buf = b''
+        while not self.stop_ev.is_set():
+            try: d = self.sock.recv(4096)
+            except OSError: return
+            if not d: return
+            buf += d
+            while b'\n' in buf:
+                line, buf = buf.split(b'\n', 1)
+                p = line.strip().split()
+                if len(p) < 4 or p[0] != b'Q' or not self.uds: continue      # anything else is the tty echoing our own lines
+                try:
+                    seq, src, tgt, req = p[1].decode(), int(p[2], 16), int(p[3], 16), bytes.fromhex(p[4].decode() if len(p) > 4 else '')
+                    resp = self.uds.handle(src, tgt, req)
+                    self._send('U %s %s\n' % (seq, resp.hex().upper() if resp else '-'))
+                except (ValueError, OSError):
+                    continue
     def _frame(self, ts, can_id, data, ext, name, direction):
         with self.lock: self.dirty['C %X %s' % (can_id, data.hex())] = can_id
     def _nmea(self, line):
@@ -712,7 +739,8 @@ class DataChannel:
     def _run(self):
         try: self.sock = _connect(self.uart_sock, 90)
         except Exception: return
-        while not self.stop_ev.is_set():
+        if self.uds: threading.Thread(target=self._reader, daemon=True).start()
+        while self.push and not self.stop_ev.is_set():
             time.sleep(0.25)
             if self.rt.state != 'running': 
                 with self.lock: self.dirty.clear()
@@ -722,6 +750,6 @@ class DataChannel:
                 for k, v in self.dirty.items(): items[v] = k      # só o último de cada ID
                 self.dirty.clear()
             if items:
-                try: self.sock.sendall(('\n'.join(items.values()) + '\n').encode())
+                try: self._send('\n'.join(items.values()) + '\n')
                 except OSError: return
     def close(self): self.stop_ev.set()

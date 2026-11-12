@@ -126,7 +126,20 @@
     // abas
     const tabBar = h('div', { class: 'tabbar', role: 'tablist' });
     const tabBody = h('div', { class: 'tabbody' });
-    const tabsCard = h('div', { class: 'card tabs-card' }, tabBar, tabBody);
+    // the tab strip scrolls sideways: mouse wheel, arrow buttons at either end, and the selected tab is kept in view
+    const tabPrev = h('button', { class: 'tabscroll prev', type: 'button', tabindex: '-1', 'aria-label': 'Previous tabs', onclick: () => tabBar.scrollBy({ left: -tabBar.clientWidth * 0.7, behavior: 'smooth' }) }, ic('chevL', 14));
+    const tabNext = h('button', { class: 'tabscroll next', type: 'button', tabindex: '-1', 'aria-label': 'More tabs', onclick: () => tabBar.scrollBy({ left: tabBar.clientWidth * 0.7, behavior: 'smooth' }) }, ic('chevR', 14));
+    const tabStrip = h('div', { class: 'tabstrip' }, tabPrev, tabBar, tabNext);
+    const tabEdges = () => { const max = tabBar.scrollWidth - tabBar.clientWidth; tabPrev.hidden = tabBar.scrollLeft <= 2; tabNext.hidden = tabBar.scrollLeft >= max - 2; };
+    tabBar.addEventListener('wheel', (e) => {
+      if (tabBar.scrollWidth <= tabBar.clientWidth) return;
+      const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      if (!d) return;
+      e.preventDefault(); tabBar.scrollLeft += e.deltaMode === 1 ? d * 30 : d;
+    }, { passive: false });
+    tabBar.addEventListener('scroll', tabEdges, { passive: true });
+    if (window.ResizeObserver) new ResizeObserver(tabEdges).observe(tabBar); else window.addEventListener('resize', tabEdges);
+    const tabsCard = h('div', { class: 'card tabs-card' }, tabStrip, tabBody);
 
     // tela "nenhum ambiente"
     const left = h('div', { class: 'run-left' }, dispCard, ctrlCard);
@@ -273,7 +286,8 @@
       let t = R.tabs[id];
       if (!t) { const host = h('div', { class: 'tab-host' }); tabBody.appendChild(host); t = R.tabs[id] = { host, api: IDE.tabDefs[id].mount(host, ctx) }; }
       t.host.hidden = false; t.api.show(); if (R.status && t.api.onStatus) t.api.onStatus(R.status);
-      tabBar.querySelectorAll('button').forEach((b) => { const on = b.dataset.tab === id; b.classList.toggle('on', on); b.setAttribute('aria-selected', on); });
+      tabBar.querySelectorAll('button').forEach((b) => { const on = b.dataset.tab === id; b.classList.toggle('on', on); b.setAttribute('aria-selected', on); if (on) b.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' }); });
+      tabEdges();
     }
     TABS.forEach(([id, label, icon]) => tabBar.appendChild(h('button', { class: 'tab', role: 'tab', type: 'button', 'data-tab': id, onclick: () => selectTab(id) }, ic(icon, 16), label)));
     selectTab(IDE.pref.get('run.tab', 'can') in IDE.tabDefs ? IDE.pref.get('run.tab', 'can') : 'can');

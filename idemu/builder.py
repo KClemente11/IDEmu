@@ -223,7 +223,7 @@ def build(env, env_dir, log=print, progress=lambda pct, step: None):
     progress(80, 'Disco de dados pronto')
     # 5) shim.img
     progress(82, 'Montando camada de tradução (shim)')
-    build_shim(env, istep['os'], os.path.join(img_dir, 'shim.img'), log)
+    manifest['uds_gateway'] = build_shim(env, istep['os'], os.path.join(img_dir, 'shim.img'), log, env_dir=env_dir)
     # 6) assinatura do HMI + manifesto
     hm = tree.get('opt/hmi/ID5/bin/HmiMain3D')
     manifest['hmi_sha256'] = sha256_file(hm) if hm else None
@@ -240,7 +240,13 @@ def build(env, env_dir, log=print, progress=lambda pct, step: None):
     progress(100, 'Pronto')
     return manifest
 
-def build_shim(env, os_istep, out, log=print):
+def uds_gateway_on(env):
+    """Emulated diagnostic gateway (HSFZ 6801, idemu/uds.py + src/shim/hsfz.c): on by default except on macOS, where it is opt-in."""
+    v = env.get('uds_gateway')
+    return bool(v) if v is not None else sys.platform != 'darwin'
+
+
+def build_shim(env, os_istep, out, log=print, env_dir=None):
     t = mkdisk.Tree()
     t.mkdir('/lib', 0o40775)
     libdir = os.path.join(HERE, 'shim', 'lib')
@@ -326,6 +332,15 @@ def build_shim(env, os_istep, out, log=print):
     for i, l in enumerate(rc):      # diagnóstico: registra como o `most` terminou (status 128+sinal) em /var/most.exit
         if '/opt/sys/bin/most ' in l and l.rstrip().endswith('&'):
             rc[i] = '( ' + l.rstrip()[:-1].rstrip() + '; echo "most exit status $? $(date)" >> /var/most.exit ) &'
+    gw = None
+    if env_dir and uds_gateway_on(env):
+        from . import uds
+        gw = uds.gateway_ips(env_dir, overlay.files(env_dir, 'sda'))
+        cfgb = ('\n'.join(gw) + '\n').encode(); t.add('/hsfz.cfg', 0o100644, cfgb, len(cfgb))
+        # the gateway addresses live on the loopback: a tool on the head unit that opens 169.254.x.x:6801 reaches the shim's listener
+        i = next((k for k, l in enumerate(rc) if 'start_net.done' in l), len(rc) - 1) + 1
+        rc[i:i] = ['ifconfig lo0 inet %s netmask 255.255.255.255 alias >> /var/hsfz.log 2>&1' % ip for ip in gw]
+        log('gateway de diagnóstico emulado (HSFZ 6801): %s' % ', '.join(gw))
     rcb = ('\n'.join(rc) + '\n').encode()
     t.add('/rc.sh', 0o100755, rcb, len(rcb))
     cd = env.get('coding', {})
@@ -340,3 +355,4 @@ def build_shim(env, os_istep, out, log=print):
     ag = open(os.path.join(HERE, 'guest', 'agent.sh'), 'rb').read()
     t.add('/agent.sh', 0o100755, ag, len(ag))
     mkdisk.write(t, out, SHIM_SECTORS)
+    return gw

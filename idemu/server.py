@@ -737,13 +737,14 @@ class H(BaseHTTPRequestHandler):
             eid = q.get('env') or (rt.id if rt else None) or getattr(A, 'last_id', None)       # sem nada rodando: o último ambiente iniciado nesta sessão
             if not eid: return {'lines': []}
             envd = A.env_dir(eid)
-            f = os.path.join(envd, 'logs', {'console': 'console.log', 'qemu': 'qemu.log', 'renderer': 'renderer.log', 'v850': 'v850.log'}.get(name, 'x'))
+            f = os.path.join(envd, 'logs', {'console': 'console.log', 'qemu': 'qemu.log', 'renderer': 'renderer.log', 'v850': 'v850.log', 'uds': 'uds.log'}.get(name, 'x'))
             if name == 'build':
                 b = A.builds.get(eid) or next(iter(A.builds.values()), None)
                 return {'lines': b['log'][-tail:] if b else []}
             if not os.path.isfile(f): return {'lines': []}
             with open(f, 'rb') as fh:
-                fh.seek(0, 2); sz = fh.tell(); fh.seek(max(0, sz - 65536)); txt = fh.read().decode('utf-8', 'replace')
+                tail = max(1, min(tail, 20000)); want = min(4 << 20, max(65536, tail * 320))      # ~320 bytes per line: enough for long renderer lines
+                fh.seek(0, 2); sz = fh.tell(); fh.seek(max(0, sz - want)); txt = fh.read().decode('utf-8', 'replace')
             return {'lines': [l.rstrip('\r') for l in txt.splitlines()][-tail:]}
         if P[0] == 'phone':
             ph = APP.phone_link()
@@ -754,6 +755,7 @@ class H(BaseHTTPRequestHandler):
                 raise ApiError('não consegui abrir as portas %s e %s para o celular (%s)' % (phone.HTTP_PORT, phone.HTTPS_PORT, e.strerror or e), 409)
             return ph.state()
         if P[0] == 'can': return self.api_can(m, path, q, d)
+        if P[0] == 'uds': return self.api_uds(m, path, q, d)
         if P[0] == 'gps': return self.api_gps(m, path, q, d)
         if path == 'ssh/info':
             rt = A.need_rt()
@@ -772,6 +774,68 @@ class H(BaseHTTPRequestHandler):
         if path == 'can/record': r = can.record(bool(d.get('on'))); return {'ok': True, 'file': r}
         if path == 'can/recordings': return {'recordings': can.recordings()}
         if path == 'can/replay': can.replay(d.get('file'), bool(d.get('loop'))); return {'ok': True}
+        raise ApiError('rota desconhecida', 404)
+    def api_uds(self, m, path, q, d):
+        """Emulated diagnostic gateway (idemu/uds.py). Works on the environment's uds.json whether or not it is running;
+        while it runs, changes go straight to the live emulator."""
+        from . import uds, builder
+        A = APP
+        eid = d.get('env') or q.get('env') or (A.rt.id if A.rt else None)
+        if not eid: raise ApiError('no environment selected')
+        envd = A.env_dir(eid)
+        rt = A.rt if A.rt and A.rt.id == eid and A.rt.state in ('booting', 'running') else None
+        emu = getattr(rt, 'uds', None) if rt else None
+        cur = lambda: emu.config() if emu else uds.load_config(envd)
+        def store(cfg):
+            try:
+                return emu.save(cfg) if emu else (uds.save_config(uds.config_path(envd), uds.validate(cfg)) or uds.validate(cfg))
+            except ValueError as e:
+                raise ApiError(str(e))
+        if path == 'uds/state':
+            env = A.read_env(eid)
+            try:
+                with open(os.path.join(envd, 'build.json')) as f: built = json.load(f).get('uds_gateway')
+            except (OSError, ValueError): built = None
+            return {'env': eid, 'config': cur(), 'running': bool(emu), 'gateway': builder.uds_gateway_on(env), 'built_gateway': built,
+                    'presets': [{'id': k, 'label': v['label'], 'note': v.get('note', '')} for k, v in uds.PRESETS.items()],
+                    'stats': dict(emu.stats) if emu else None, 'now': round(emu.now(), 3) if emu else None}
+        if path == 'uds/values':
+            if not emu: return {'running': False, 'values': {}}
+            t = emu.now(); cfg = emu.config(); out = {}
+            for a, e in cfg['ecus'].items():
+                for kind in ('dids', 'obd'):
+                    for k, v in (e.get(kind) or {}).items():
+                        out['%s/%s/%s' % (a, kind, k)] = uds.encode_value(v, t).hex().upper()
+                        if 'fields' in v:
+                            for i, f in enumerate(v['fields']): out['%s/%s/%s/%d' % (a, kind, k, i)] = round(uds.phys_value(f, t), 4)
+                        elif 'hex' not in v: out['%s/%s/%s/v' % (a, kind, k)] = round(uds.phys_value(v, t), 4)
+            return {'running': True, 'values': out}
+        if path == 'uds/config' and m == 'POST': return {'ok': True, 'config': store(d.get('config') or {})}
+        if path == 'uds/preset' and m == 'POST':
+            if d.get('preset') not in uds.PRESETS: raise ApiError('unknown preset')
+            cfg = cur()
+            if d.get('replace'): cfg['ecus'] = {}
+            return {'ok': True, 'config': store(uds.merge_preset(cfg, d['preset']))}
+        if path == 'uds/value' and m == 'POST':
+            cfg = cur()
+            try:
+                e = cfg['ecus'][uds.norm_key(d['ecu'], 2)][d['kind']][uds.norm_key(d['key'], 4 if d['kind'] == 'dids' else 2)]
+                if d.get('field') is not None: e = e['fields'][int(d['field'])]
+            except (KeyError, IndexError, ValueError): raise ApiError('no such entry')
+            if d.get('wave'): e['wave'] = {'min': float(d['wave']['min']), 'max': float(d['wave']['max']), 'period': float(d['wave']['period'])}
+            else: e.pop('wave', None); e.pop('hex', None); e['value'] = float(d['value'])
+            return {'ok': True, 'config': store(cfg)}
+        if path == 'uds/log': return emu.transactions(int(q.get('since', 0)), int(q.get('limit', 200))) if emu else {'seq': 0, 'items': [], 'stats': None}
+        if path == 'uds/test' and m == 'POST':
+            try: req = uds.hexb(d.get('request', '')); ecu = int(str(d.get('ecu', '12')), 16)
+            except ValueError: raise ApiError('request and ECU must be hex')
+            if not req: raise ApiError('empty request')
+            e = emu or uds.UdsEmulator(uds.config_path(envd))
+            r = e.handle(0xF4, ecu, req)
+            return {'response': r.hex().upper() if r is not None else None, 'note': e.transactions(0, 1)['items'][-1]['note'] if e.transactions(0, 1)['items'] else ''}
+        if path == 'uds/gateway' and m == 'POST':
+            env = A.read_env(eid); env['uds_gateway'] = bool(d.get('on')); A.save_env(env)
+            return {'ok': True, 'gateway': env['uds_gateway'], 'rebuild': True}
         raise ApiError('rota desconhecida', 404)
     def api_gps(self, m, path, q, d):
         g = APP.need_gps()

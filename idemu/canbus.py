@@ -636,6 +636,13 @@ class CanBus(object):
         name = (fr.name or fr.signals[0].name) if fr and fr.signals else None
         self._emit(can_id, data, ext, name, direction)
 
+    def log_only(self, can_id, data, name, direction):
+        """Frame shown in the monitor only (e.g. the emulated UDS diagnostics): it is not sent to the guest, to TCP clients
+        or to the frame callbacks, and it is not recorded."""
+        with self._lock:
+            self._seq += 1
+            self._ring.append((self._seq, time.monotonic() - self._t0, int(can_id), False, bytes(data), direction, name))
+
     def frames_since(self, seq, limit=200):
         """Formato de GET /api/can/frames. `seq` devolvido = último quadro entregue."""
         seq = int(seq or 0)

@@ -35,7 +35,7 @@
   /* ====================================================================== CAN */
   IDE.tabDefs.can = {
     mount(host, ctx) {
-      const s = sub(host, [['sig', 'Sinais', signalsPane], ['mon', 'Monitor', monitorPane], ['scn', 'Cenários', scenariosPane], ['rec', 'Gravar / injetar', recPane]], 'can.sub', 'sig');
+      const s = sub(host, [['sig', 'Sinais', signalsPane], ['mon', 'Monitor', monitorPane], ['uds', 'UDS', udsPane], ['scn', 'Cenários', scenariosPane], ['rec', 'Gravar / injetar', recPane]], 'can.sub', 'sig');
       return { show: s.show, hide: s.hide, destroy: s.destroy, onStatus(st) { s.each((p) => p.onStatus && p.onStatus(st)); } };
 
       /* ---- sinais ---- */
@@ -158,6 +158,148 @@
         function halt() { if (stop) stop(); stop = null; upd(); }
         pauseLabel(); parse(); upd();
         return { show: go, hide: halt, destroy: halt };
+      }
+
+      /* ---- UDS: emulated diagnostic gateway (idemu/uds.py) ---- */
+      function udsPane(el) {
+        let stop = null, logStop = null, since = 0, cfg = null, st = null, values = {}, rows = [];
+        const envId = () => { const e = ((ctx && ctx.status()) || {}).env || IDE.state.running || IDE.pref.get('uds.env', null); if (e) IDE.pref.set('uds.env', e); return e; };
+        const call = (path, body) => body ? api('/api/uds/' + path, { body: Object.assign({ env: envId() }, body) }) : api('/api/uds/' + path + '?' + IDE.qs({ env: envId() }));
+        const gwBox = h('div', { class: 'note hidden' });
+        const presetSel = h('select', { class: 'input sm', 'aria-label': 'Preset' });
+        const addBtn = h('button', { class: 'btn sm', type: 'button', title: 'Add the preset ECUs and values to the current configuration' }, ic('plus', 14), 'Add preset');
+        const repBtn = h('button', { class: 'btn sm', type: 'button', title: 'Replace every ECU with the preset' }, 'Replace');
+        const jsonBtn = h('button', { class: 'btn sm', type: 'button' }, ic('file', 14), 'Edit JSON');
+        const presetNote = h('p', { class: 'help' });
+        const ecuBox = h('div');
+        const jsonBox = h('div', { hidden: true });
+        const ta = h('textarea', { class: 'input uds-json', spellcheck: 'false', 'aria-label': 'UDS configuration (JSON)' });
+        const jsonErr = h('div', { class: 'ferr' });
+        const saveJson = h('button', { class: 'btn primary sm', type: 'button' }, ic('check', 14), 'Save');
+        IDE.add(jsonBox, ta, h('div', { class: 'row between' }, jsonErr, saveJson),
+          h('p', { class: 'help' }, 'Values: {"bytes": 2, "scale": 0.0078125, "offset": 0, "signed": false, "value": 101.3}, optionally "wave": {"min", "max", "period"}; fixed bytes: {"hex": "FFFF"}; records: {"length": n, "fields": [{"pos": 0, ...}]}. Raw rules match exact requests ("..": any byte). See idemu/uds.py.'));
+        // request tester
+        const tEcu = h('input', { class: 'input sm mono', value: '12', maxlength: 2, style: 'width:52px', 'aria-label': 'ECU (hex)' });
+        const tReq = h('input', { class: 'input sm mono', placeholder: '22 42 05', 'aria-label': 'Request (hex)' });
+        const tOut = h('div', { class: 'mono small' });
+        const tBtn = h('button', { class: 'btn sm', type: 'button' }, ic('send', 14), 'Send');
+        tBtn.addEventListener('click', () => IDE.busy(tBtn, async () => {
+          try { const r = await call('test', { ecu: tEcu.value.trim(), request: tReq.value }); tOut.textContent = (r.response == null ? IDE.t('(no reply)') : r.response.replace(/(..)(?=.)/g, '$1 ')) + (r.note ? '   ' + r.note : ''); } catch (e) { toastErr(e); }
+        }));
+        tReq.addEventListener('keydown', (e) => { if (e.key === 'Enter') tBtn.click(); });
+        // transactions
+        const logView = h('div', { class: 'logview uds-log', role: 'log' });
+        const statEl = h('span', { class: 'muted small' });
+        IDE.add(el,
+          gwBox,
+          h('div', { class: 'uds-head' }, presetSel, addBtn, repBtn, h('div', { class: 'grow' }), jsonBtn),
+          presetNote, ecuBox, jsonBox,
+          h('fieldset', null, h('legend', null, 'Try a request'), h('div', { class: 'uds-test' }, h('span', { class: 'muted small' }, 'ECU'), tEcu, tReq, tBtn), tOut),
+          h('fieldset', null, h('legend', null, 'Requests from the head unit'), h('div', { class: 'row between' }, h('span', { class: 'help' }, 'Also shown in the Monitor tab as ISO-TP frames (6F1 / 6xx) and in Logs → UDS diagnostics.'), statEl), logView));
+
+        function renderGateway() {
+          const on = st.gateway, built = st.built_gateway;
+          const stale = on !== !!(built && built.length);
+          IDE.clear(gwBox); gwBox.className = 'note' + (on && !stale ? ' ok' : ' warn');
+          const btn = h('button', { class: 'btn sm', type: 'button' }, on ? 'Turn off' : 'Turn on');
+          btn.addEventListener('click', () => IDE.busy(btn, async () => { try { await call('gateway', { on: !on }); toast('Rebuild the environment to apply this.', 'info'); await load(); } catch (e) { toastErr(e); } }));
+          IDE.add(gwBox, ic(on ? 'activity' : 'info', 16), h('span', null,
+            on ? (stale ? 'Diagnostic gateway is on but not in the current build: rebuild the environment.' : IDE.t('Diagnostic gateway answers on {ips} port 6801. Point gateway-ip.txt at one of these.', { ips: (built || []).join(', ') }))
+               : 'Diagnostic gateway is off for this environment.'), btn);
+        }
+        function liveText(key) { const v = values[key]; return v == null ? '' : String(v); }
+        function valueRow(a, kind, key, v, field, label) {
+          const name = field != null ? v.name || ('field ' + field) : v.name || '';
+          const isHex = 'hex' in v || 'fields' in v;
+          const num = h('input', { class: 'input sm num', type: 'number', step: 'any', 'aria-label': name, title: 'Type a value to hold it fixed (stops the sweep)' });
+          if (!isHex) { if (v.wave) num.placeholder = 'sweep'; else num.value = v.value != null ? v.value : 0; }
+          num.addEventListener('change', async () => {
+            if (num.value === '') return;
+            try { cfg = (await call('value', { ecu: a, kind, key, field, value: Number(num.value) })).config; toast('Value set.', 'success'); renderEcus(); } catch (e) { toastErr(e); }
+          });
+          const liveV = h('span'), liveRaw = h('span', { class: 'muted small mono' });
+          const lk = a + '/' + kind + '/' + key + (field != null ? '/' + field : (isHex ? '' : '/v'));
+          rows.push({ liveV, liveRaw, lk, raw: field == null ? a + '/' + kind + '/' + key : null, unit: v.unit || '' });
+          const meta = [label, v.wave ? IDE.t('sweep {min}–{max} / {period} s', v.wave) : null, 'fields' in v ? IDE.t('{n} fields', { n: v.fields.length }) : null, 'hex' in v ? 'fixed bytes' : null].filter(Boolean).map((x) => IDE.t(x)).join(' · ');
+          return h('tr', { class: field != null ? 'sub' : '' },
+            h('td', { class: 'mono' }, field != null ? '+' + (v.pos || 0) : (kind === 'obd' ? '01 ' : '') + key),
+            h('td', null, h('div', null, name), meta ? h('div', { class: 'muted small' }, meta) : null),
+            h('td', { class: 'mono' }, h('div', null, liveV), h('div', null, liveRaw)),
+            h('td', null, isHex ? null : num));
+        }
+        function renderEcus() {
+          IDE.clear(ecuBox); rows = [];
+          const ecus = Object.keys(cfg.ecus || {}).sort();
+          if (!ecus.length) ecuBox.appendChild(h('div', { class: 'placeholder' }, 'No ECUs configured. Add a preset or edit the JSON.'));
+          ecus.forEach((a) => {
+            const e = cfg.ecus[a];
+            const tb = h('tbody');
+            [['dids', 'DID'], ['obd', 'OBD']].forEach(([kind]) => Object.keys(e[kind] || {}).sort().forEach((k) => {
+              const v = e[kind][k];
+              tb.appendChild(valueRow(a, kind, k, v, null, (v.bytes ? v.bytes + 'B' : '') + (v.signed ? ' signed' : '')));
+              (v.fields || []).forEach((f, i) => tb.appendChild(valueRow(a, kind, k, f, i, (f.bytes || 1) + 'B' + (f.signed ? ' signed' : ''))));
+            }));
+            (e.raw || []).forEach((r) => tb.appendChild(h('tr', null, h('td', { class: 'mono' }, 'raw'), h('td', { class: 'mono', colspan: 4 }, String(r.request) + '  →  ' + (r.response || IDE.t('(no reply)'))))));
+            const det = h('details', { class: 'uds-ecu', open: IDE.pref.get('uds.ecu.' + a, true) },
+              h('summary', null, ic('chevR', 14), h('span', { class: 'mono' }, a), h('span', null, e.name || ''), h('span', { class: 'cnt muted small' }, IDE.t('{n} values', { n: tb.childElementCount }))),
+              h('table', { class: 'uds-tbl' }, h('colgroup', null, h('col', { style: 'width:62px' }), h('col'), h('col', { style: 'width:120px' }), h('col', { style: 'width:100px' })), h('thead', null, h('tr', null, h('th', null, 'ID'), h('th', null, 'Name'), h('th', null, 'Live'), h('th', null, 'Value'))), tb));
+            det.addEventListener('toggle', () => IDE.pref.set('uds.ecu.' + a, det.open));
+            ecuBox.appendChild(det);
+          });
+          paintLive();
+        }
+        function paintLive() {
+          rows.forEach((r) => {
+            const v = values[r.lk], raw = r.raw ? values[r.raw] : null;
+            r.liveV.textContent = v != null ? (Math.round(v * 1000) / 1000) + (r.unit ? ' ' + r.unit : '') : (raw && raw.length <= 16 ? '' : '–');
+            r.liveRaw.textContent = raw ? (raw.length > 24 ? raw.slice(0, 24).replace(/(..)(?=.)/g, '$1 ') + ' …' : raw.replace(/(..)(?=.)/g, '$1 ')) : '';
+          });
+        }
+        async function load() {
+          if (!envId()) { IDE.clear(ecuBox); ecuBox.appendChild(h('div', { class: 'placeholder' }, 'Start an environment to configure its diagnostics.')); return; }
+          st = await call('state'); cfg = st.config;
+          if (!presetSel.childElementCount) (st.presets || []).forEach((p) => presetSel.appendChild(h('option', { value: p.id }, p.label)));
+          const pn = (st.presets || []).find((p) => p.id === presetSel.value); presetNote.textContent = pn ? pn.note : '';
+          renderGateway(); renderEcus();
+          if (!jsonBox.hidden && document.activeElement !== ta) ta.value = JSON.stringify(cfg, null, 1);
+        }
+        async function poll() {
+          if (!envId()) return;
+          const v = await call('values'); values = v.values || {}; paintLive();
+        }
+        async function pollLog() {
+          if (!envId()) return;
+          const d = await api('/api/uds/log?' + IDE.qs({ env: envId(), since, limit: 200 }));
+          if (d.stats) statEl.textContent = IDE.t('{n} requests · {p} answered · {neg} negative · {s} no reply', { n: d.stats.requests, p: d.stats.positive, neg: d.stats.negative, s: d.stats.silent });
+          const items = d.items || []; if (!items.length) return;
+          since = items[items.length - 1].seq;
+          const follow = logView.scrollTop + logView.clientHeight >= logView.scrollHeight - 24;
+          const frag = document.createDocumentFragment();
+          items.forEach((it) => {
+            const ok = it.resp != null && !it.resp.startsWith('7F');
+            frag.appendChild(h('div', { class: 'll' + (it.resp == null ? ' w' : ok ? '' : ' e') }, Number(it.t).toFixed(3) + '  ' + it.ecu + (it.ecu_name ? ' ' + it.ecu_name : '') + '  ' + it.req.replace(/(..)(?=.)/g, '$1 ') + '  →  ' + (it.resp == null ? IDE.t('(no reply)') : it.resp.replace(/(..)(?=.)/g, '$1 ')) + (it.note ? '   ' + it.note : '')));
+          });
+          logView.appendChild(frag);
+          while (logView.childElementCount > 500) logView.firstChild.remove();
+          if (follow) logView.scrollTop = logView.scrollHeight;
+        }
+        presetSel.addEventListener('change', () => { const pn = ((st && st.presets) || []).find((p) => p.id === presetSel.value); presetNote.textContent = pn ? pn.note : ''; });
+        const applyPreset = (replace) => IDE.busy(replace ? repBtn : addBtn, async () => {
+          if (replace && !await IDE.confirm({ title: 'Replace configuration', message: 'Replace every configured ECU with this preset?', confirmLabel: 'Replace', danger: true })) return;
+          try { cfg = (await call('preset', { preset: presetSel.value, replace })).config; renderEcus(); toast('Preset applied.', 'success'); } catch (e) { toastErr(e); }
+        });
+        addBtn.addEventListener('click', () => applyPreset(false)); repBtn.addEventListener('click', () => applyPreset(true));
+        jsonBtn.addEventListener('click', () => { jsonBox.hidden = !jsonBox.hidden; ecuBox.hidden = !jsonBox.hidden; if (!jsonBox.hidden) { ta.value = JSON.stringify(cfg || {}, null, 1); jsonErr.textContent = ''; } });
+        saveJson.addEventListener('click', () => IDE.busy(saveJson, async () => {
+          let parsed; try { parsed = JSON.parse(ta.value); } catch (e) { jsonErr.textContent = IDE.t('JSON error: {msg}', { msg: e.message }); return; }
+          try { cfg = (await call('config', { config: parsed })).config; jsonErr.textContent = ''; ta.value = JSON.stringify(cfg, null, 1); renderEcus(); toast('UDS configuration saved.', 'success'); } catch (e) { jsonErr.textContent = e.message || String(e); }
+        }));
+        return {
+          show() { load().catch(toastErr); stop = IDE.loop(poll, 700); logStop = IDE.loop(pollLog, 600); },
+          hide() { if (stop) stop(); if (logStop) logStop(); stop = logStop = null; },
+          destroy() { if (stop) stop(); if (logStop) logStop(); },
+          onStatus(s) { if (s && s.env && s.env !== IDE.pref.get('uds.env', null)) { IDE.pref.set('uds.env', s.env); since = 0; IDE.clear(logView); if (stop) load().catch(() => {}); } },
+        };
       }
 
       /* ---- cenários ---- */
@@ -615,40 +757,69 @@
   };
 
   /* ====================================================================== Logs */
+  /* The log view scrolls by itself (the tab host is sized to the card), follows new lines only while it is at the bottom,
+     colours errors and warnings, and can filter by text or by level. */
   IDE.tabDefs.logs = {
     mount(host, ctx) {
-      let stop = null, last = '';
-      const sel = h('select', { class: 'input sm', 'aria-label': 'Log' }, [['console', 'Console'], ['qemu', 'QEMU'], ['renderer', 'Renderizador'], ['v850', 'V850'], ['guest', 'Sistema convidado']].map(([v, l]) => h('option', { value: v }, l)));
-      sel.value = IDE.pref.get('logs.name', 'console');
-      const tail = h('select', { class: 'input sm', 'aria-label': 'Linhas' }, [100, 200, 500, 1000].map((n) => h('option', { value: n }, IDE.t('{n} linhas', { n }))));
-      tail.value = String(IDE.pref.get('logs.tail', 200));
+      host.classList.add('fill');
+      let stop = null, lines = [], shown = false, lastKey = '';
+      const LOGS = [['console', 'Console'], ['renderer', 'Renderizador'], ['qemu', 'QEMU'], ['v850', 'V850'], ['guest', 'Sistema convidado'], ['uds', 'UDS diagnostics']];
+      const sel = h('select', { class: 'input sm', 'aria-label': 'Log' }, LOGS.map(([v, l]) => h('option', { value: v }, l)));
+      sel.value = IDE.pref.get('logs.name', 'console'); if (!LOGS.some((x) => x[0] === sel.value)) sel.value = 'console';
+      const tail = h('select', { class: 'input sm', 'aria-label': 'Linhas' }, [200, 500, 1000, 2000, 5000].map((n) => h('option', { value: n }, IDE.t('{n} linhas', { n }))));
+      tail.value = String(IDE.pref.get('logs.tail', 500)); if (!tail.value) tail.value = '500';
+      const filter = h('input', { class: 'input sm grow', type: 'search', placeholder: 'Filtrar linhas…', 'aria-label': 'Filtrar', value: IDE.pref.get('logs.filter', '') });
+      let level = IDE.pref.get('logs.level', 'all');
+      const lvlSeg = h('div', { class: 'seg sm', role: 'group', 'aria-label': 'Level' });
+      [['all', 'All'], ['warn', 'Warnings'], ['err', 'Errors']].forEach(([v, l]) => lvlSeg.appendChild(h('button', { type: 'button', class: 'segb' + (v === level ? ' on' : ''), 'data-v': v, onclick: () => { level = v; IDE.pref.set('logs.level', v); lvlSeg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === v)); lastKey = ''; paint(true); } }, l)));
       const autoCb = h('input', { type: 'checkbox', checked: IDE.pref.get('logs.auto', true), onchange: () => { IDE.pref.set('logs.auto', autoCb.checked); restart(); } });
-      const filter = h('input', { class: 'input sm', type: 'search', placeholder: 'Filtrar linhas…', 'aria-label': 'Filtrar' });
-      const pre = h('pre', { class: 'logbox tall' });
+      const wrapCb = h('input', { type: 'checkbox', checked: IDE.pref.get('logs.wrap', false), onchange: () => { IDE.pref.set('logs.wrap', wrapCb.checked); view.classList.toggle('wrap', wrapCb.checked); } });
+      const view = h('div', { class: 'logview' + (wrapCb.checked ? ' wrap' : ''), role: 'log', tabindex: '0' });
+      const jump = h('button', { class: 'btn sm logjump', type: 'button', hidden: true, onclick: () => { view.scrollTop = view.scrollHeight; } }, ic('chevD', 14), 'Latest');
       const status = h('span', { class: 'muted small' });
-      const copyBtn = h('button', { class: 'btn sm', type: 'button', onclick: async () => { const ok = await IDE.copyText(pre.textContent); toast(ok ? 'Log copiado.' : 'Não foi possível copiar.', ok ? 'success' : 'error'); } }, ic('copy', 14), 'Copiar');
+      const copyBtn = h('button', { class: 'btn sm', type: 'button', title: 'Copy the lines shown', onclick: async () => { const ok = await IDE.copyText(visible().join('\n')); toast(ok ? 'Log copiado.' : 'Não foi possível copiar.', ok ? 'success' : 'error'); } }, ic('copy', 14), 'Copiar');
+      const dlBtn = h('button', { class: 'btn sm', type: 'button', title: 'Save the lines shown as a text file', onclick: () => {
+        const a = h('a', { href: URL.createObjectURL(new Blob([visible().join('\n') + '\n'], { type: 'text/plain' })), download: sel.value + '.log' });
+        document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+      } }, ic('upload', 14), 'Save');
       const refBtn = h('button', { class: 'btn sm', type: 'button', onclick: () => load().catch(toastErr) }, ic('refresh', 14), 'Atualizar');
-      IDE.add(host, h('div', { class: 'toolbar' }, sel, tail, filter), h('div', { class: 'toolbar' }, h('label', { class: 'check' }, autoCb, h('span', null, 'Atualizar sozinho')), refBtn, copyBtn, h('div', { class: 'spacer' }), status), pre);
-      let lines = [];
-      function paint() {
+      IDE.add(host,
+        h('div', { class: 'toolbar' }, sel, tail, lvlSeg, filter),
+        h('div', { class: 'toolbar' }, h('label', { class: 'check' }, autoCb, h('span', null, 'Atualizar sozinho')), h('label', { class: 'check' }, wrapCb, h('span', null, 'Wrap lines')), refBtn, copyBtn, dlBtn, h('div', { class: 'spacer' }), status),
+        h('div', { class: 'logwrap' }, view, jump));
+      const ERR = /(^|\W)(E\[|ERROR|Error|error:|FAIL|fail(ed|ure)?\b|CRASH|Traceback|Exception|ASSERTION|rejected|refused)/;
+      const WARN = /(^|\W)(W\[|WARN|Warning|warning|AVISO|timeout|timed out)/;
+      const kind = (l) => ERR.test(l) ? 'e' : WARN.test(l) ? 'w' : '';
+      function visible() {
         const f = filter.value.trim().toLowerCase();
-        const shown = f ? lines.filter((l) => l.toLowerCase().includes(f)) : lines;
-        const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 30;
-        const txt = shown.join('\n');
-        if (txt !== last) { pre.textContent = txt || IDE.t('(vazio)'); last = txt; if (atBottom) pre.scrollTop = pre.scrollHeight; }
-        status.textContent = IDE.t('{n} linhas', { n: shown.length });
+        return lines.filter((l) => (!f || l.toLowerCase().includes(f)) && (level === 'all' || (level === 'err' ? kind(l) === 'e' : kind(l) !== '')));
       }
+      const atBottom = () => view.scrollTop + view.clientHeight >= view.scrollHeight - 24;
+      function paint(force) {
+        const rows = visible();
+        const key = rows.length + '|' + (rows[0] || '') + '|' + (rows[rows.length - 1] || '');
+        if (!force && key === lastKey) return;
+        lastKey = key;
+        const follow = atBottom() || force === 'bottom';
+        const frag = document.createDocumentFragment();
+        if (!rows.length) frag.appendChild(h('div', { class: 'll muted' }, lines.length ? 'No lines match the filter.' : '(vazio)'));
+        rows.forEach((l) => { const k = kind(l); const d = document.createElement('div'); d.className = k ? 'll ' + k : 'll'; d.textContent = l || ' '; frag.appendChild(d); });
+        IDE.clear(view); view.appendChild(frag);
+        if (follow) view.scrollTop = view.scrollHeight;
+        status.textContent = IDE.t('{n} linhas', { n: rows.length }) + (rows.length !== lines.length ? ' / ' + lines.length : '');
+        jump.hidden = atBottom();
+      }
+      view.addEventListener('scroll', () => { jump.hidden = atBottom(); });
       async function load() {
         const d = await api('/api/logs?' + IDE.qs({ name: sel.value, tail: tail.value, env: ((ctx && ctx.status()) || {}).env || null }));
         lines = d.lines || []; paint();
       }
       function restart() { if (stop) stop(); stop = null; if (autoCb.checked && shown) stop = IDE.loop(load, 2000); else if (shown) load().catch(() => {}); }
-      let shown = false;
-      sel.addEventListener('change', () => { IDE.pref.set('logs.name', sel.value); last = ''; pre.scrollTop = 1e9; load().catch(toastErr); });
+      sel.addEventListener('change', () => { IDE.pref.set('logs.name', sel.value); lines = []; lastKey = ''; load().then(() => paint('bottom')).catch(toastErr); });
       tail.addEventListener('change', () => { IDE.pref.set('logs.tail', Number(tail.value)); load().catch(toastErr); });
-      filter.addEventListener('input', paint);
+      filter.addEventListener('input', debounce(() => { IDE.pref.set('logs.filter', filter.value); paint(true); }, 120));
       return {
-        show() { shown = true; last = ''; restart(); setTimeout(() => { pre.scrollTop = pre.scrollHeight; }, 100); },
+        show() { shown = true; lastKey = ''; restart(); setTimeout(() => { view.scrollTop = view.scrollHeight; jump.hidden = true; }, 120); },
         hide() { shown = false; if (stop) stop(); stop = null; }, destroy() { if (stop) stop(); },
       };
     },
