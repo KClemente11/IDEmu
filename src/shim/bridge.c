@@ -14,15 +14,18 @@ u32 *br_begin(u32 op,u32 n){
   if(qn+2+n>QCAP-8) br_flush();
   u32 *p=Q+qn; p[0]=op; p[1]=n; qn+=2+n; return p+2;
 }
+/* IDEmu diag (timing): bridge counters, read and reset by the input thread in hook.c */
+extern int clock_gettime(int,void*); static u32 br_now_us(void){ u32 ts[2]={0,0}; clock_gettime(2,ts); return ts[0]*1000000u+ts[1]/1000u; }
+volatile u32 tm_flush_n,tm_flush_bytes,tm_sync_n,tm_sync_us,tm_sync_max;
 void br_flush(void){
   if(!qn) return;
   if(dummy){ qn=0; dummyrep[0]=0; return; }
-  u32 n=qn*4; qn=0; R[0]=n;
+  u32 n=qn*4; qn=0; tm_flush_n++; tm_flush_bytes+=n; R[0]=n;
 }
 u32 br_sync(u32 **rep){
   br_flush(); *rep=P;
   if(dummy) return 0;
-  return R[2];
+  { u32 t=br_now_us(); u32 r=R[2]; u32 d=br_now_us()-t; tm_sync_n++; tm_sync_us+=d; if(d>tm_sync_max) tm_sync_max=d; return r; }
 }
 static void putstr(const char*s,u32 a,u32 b,u32 c){
   u32 l=strlen(s); u32 nw=(l+3)/4;

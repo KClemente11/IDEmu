@@ -54,7 +54,7 @@ u32 eglGetError(void){ return 0x3000; }
 static u32 nswap;
 u32 eglSwapBuffers(void*d,void*surf){
   { static int bt; if(bt++<2){ volatile u32 m; u32 *sp=(u32*)&m; char b[220]; int n=0,c=0; b[0]=0; extern int snprintf(char*,unsigned long,const char*,...); n=snprintf(b,220,"swapbt lr=%x:",(u32)__builtin_return_address(0)); for(int i=0;i<600&&c<16&&n<200;i++){ u32 w=sp[i]; if(w>0x100000&&w<0x3000000&&!(w&3)){ u32 ins=*(u32*)(w-4); if((ins&0x0f000000)==0x0b000000||(ins&0x0ffffff0)==0x012fff30){ n+=snprintf(b+n,220-n," %x",w); c++; } } } br_log(b); } }
-  u32*p,*rep; obj_t*o=(obj_t*)surf; u32 w=o?o->w:1920,h=o?o->h:720; LOCK(); p=br_begin(OP_SWAP,2); p[0]=w;p[1]=h; br_sync(&rep); UNLOCK();
+  u32*p,*rep; obj_t*o=(obj_t*)surf; u32 w=o?o->w:1920,h=o?o->h:720; { extern volatile u32 tm_swap_n,tm_swap_max,tm_swap_lock; extern u32 tm_now_us(void); u32 t0=tm_now_us(); LOCK(); u32 t1=tm_now_us(); p=br_begin(OP_SWAP,2); p[0]=w;p[1]=h; br_sync(&rep); UNLOCK(); u32 t2=tm_now_us(); tm_swap_n++; if(t2-t1>tm_swap_max) tm_swap_max=t2-t1; if(t1-t0>tm_swap_lock) tm_swap_lock=t1-t0; }
   if(++nswap<5) L("eglSwapBuffers",nswap,w,h); return 1; }
 static int streq(const char*a,const char*b){ return strcmp(a,b)==0; }
 /* superficie do mapa (CHmiSurfaceRedirection): a imagem e a textura vivem no host; o EGLImage so identifica a superficie atual */

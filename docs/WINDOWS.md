@@ -96,7 +96,7 @@ bash tools/qemu/build-windows-native.sh /path/to/qemu-11.1.2.tar.xz
 Then build Setup from Windows PowerShell using the existing PyInstaller and Inno Setup tools.
 
 ```powershell
-.\.build-tools\Scripts\python.exe .\build_installer.py --backend native --version 0.1.5 --output-dir .\dist\native-installer-built-by-you
+.\.build-tools\Scripts\python.exe .\build_installer.py --backend native --version 0.1.6 --output-dir .\dist\native-installer-built-by-you
 ```
 
 ### iDrive 7

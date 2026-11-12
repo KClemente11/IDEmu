@@ -2,7 +2,7 @@
 
 A tabela de variáveis (nome -> bloco/byte/máscara/valor) vem do dicionário CODING_FEATURE extraído da libhmicoding
 do próprio firmware (data/coding_dict.json.z)."""
-import json, os, struct, zlib, collections
+import json, os, struct, sys, zlib, collections
 
 _DICT = None
 def load_dict():
@@ -41,6 +41,19 @@ def navi_value(navi, country=None):
     if navi in ('navi_professional', 'navi_business', 'navi', True):
         return NAVI_BY_COUNTRY.get((country or '').upper(), 'ece')
     return navi or 'keine_navi'
+
+# iDrive 5/6: additional coding saved in new environments (and restored via the editor's "reset" function), such as coding7.DEFAULT_HU in iDrive 7.
+# Plugins and Remoting (A4A, A4A_REMOTE_APPS, REMOTE_HMI) and "Technology in action" (EfficientDynamics history, xDrive) — see
+# docs / CHmiVariantServer variant IDs. Applies only outside of macOS: the original (Mac) version continues to create environments as it did before.
+
+# iDrive 5/6: codificação extra gravada em novos ambientes (e restaurada pelo "reset" do editor), como coding7.DEFAULT_HU no iDrive 7.
+# Plugins e Remoting (A4A, A4A_REMOTE_APPS, REMOTE_HMI) e o "Technology in action" (histórico EfficientDynamics, xDrive) -- ver
+# docs/IDs de variantes do CHmiVariantServer. Só fora do macOS: a versão original (Mac) continua criando ambientes como antes.
+DEFAULT_EXTRA = {'A4A': 1, 'A4A_REMOTE_APPS': 1, 'REMOTE_HMI': 1, 'ECO_TYPE_DRIVETRAIN': 0,
+                 'HIST_FUTURE': 1, 'HIST_PRESENT': 1, 'HIST_PAST': 1, 'X_VIEW': 1, 'MOMENTDISTRIBUTION_MENU': 1, 'EFF_DYN_SPORT_CID': 1, 'EFF_DYN_SPORT_UNIT': 1}
+
+def default_extra():
+    return dict(DEFAULT_EXTRA) if sys.platform != 'darwin' else {}
 
 def profile_for(env):
     """Converte env['coding'] + chassi/marca em {VARIAVEL: valor} do dicionário de codificação."""

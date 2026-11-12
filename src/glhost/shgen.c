@@ -21,10 +21,15 @@ static int parse_syms(const unsigned char*b,int len,ShInfo*o){
       s->flag=x[1]; s->type=x[2]; s->cls=x[3]; s->arr=x[7]; q=e+19; }
     o->n=n; return 1; }
   return 0; }
-static const char *reserved[]={"active","common","partition","filter","input","output","half","fixed","sample","texture","class","union","enum","template","this","default","public","static","extern","external","long","short","double","using","flat","smooth","superp","cast","namespace","interface","goto","noise","packed","volatile","inline","noinline",0};
+static const char *reserved[]={"active","common","partition","filter","input","output","half","fixed","sample","texture","class","union","enum","template","this","default","public","static","extern","external","long","short","double","using","flat","smooth","superp","cast","namespace","interface","goto","noise","packed","volatile","inline","noinline",
+  "col",   /* gen_fs uses "col" as its accumulator: a varying/uniform with that name (car M_CAR_MLIA_LIGHTADD2) would be shadowed; OP_GETUNILOC maps through gname too */
+  0};
 static const char *gname(const char*n){ static char b[8][72]; static int k; for(int i=0;reserved[i];i++) if(!strcmp(n,reserved[i])){ k=(k+1)&7; snprintf(b[k],72,"%s_",n); return b[k]; } return n; }
 static const char *gtype(int t){ switch(t){ case 2:return "float"; case 3:return "vec2"; case 4:return "vec3"; case 5:return "vec4"; case 6:return "bool"; case 18:return "mat3"; case 22:return "mat4"; case 20:return "mat2"; case 24:case 30:return "sampler2D"; case 26:return "samplerCube"; } return "float"; }
 static Sym *fnd(ShInfo*o,const char*n,int cls){ for(int i=0;i<o->n;i++) if((cls<0||o->s[i].cls==cls)&&!strcmp(o->s[i].name,n)&&!o->s[i].flag) return &o->s[i]; return 0; }
+/* attribute a (vec2/vec3/vec4/float) read as vec2: desktop GL drivers (NVIDIA) reject the implicit vec3->vec2 truncation that others accept */
+static const char *as_vec2(ShInfo*v,const char*a){ static char b[4][80]; static int k; Sym*s=fnd(v,a,4); if(!s||s->type==3) return a; k=(k+1)&3;
+  if(s->type==2) snprintf(b[k],80,"vec2(%s)",a); else snprintf(b[k],80,"%s.xy",a); return b[k]; }
 static int ieq(const char*a,const char*b){ return !strcasecmp(a,b); }
 static void decls(ShInfo*o,char**pp,int vs){ char*p=*pp;
   for(int i=0;i<o->n;i++){ Sym*s=&o->s[i]; if(s->flag) continue; const char*q=0; if(s->cls==3) q="uniform"; else if(s->cls==4) q="attribute"; else if(s->cls==5&&vs) q="varying"; else if(s->cls==6&&!vs) q="varying"; if(!q) continue;
@@ -62,11 +67,17 @@ static char *gen_vs(ShInfo*v,ShInfo*f){ char *o=malloc(32768),*p=o; p+=sprintf(p
       case 3: { const char*a=NULL; int has1=strchr(s->name,'1')!=0; if(has1&&fnd(v,"a_TextureCoordinate1",4)) a="a_TextureCoordinate1"; else if(fnd(v,"a_TextureCoordinate",4)) a="a_TextureCoordinate"; else if(fnd(v,"a_TextureCoordinate1",4)) a="a_TextureCoordinate1";
         if(arrow_u && !strcmp(s->name,"uv"))
           p+=sprintf(p," %s=vec2(%s,a_TextureCoordinate.y);\n",n,arrow_u);
-        else if(a) p+=sprintf(p," %s=%s;\n",n,a); else p+=sprintf(p," %s=P.xy*0.5+0.5;\n",n); break; }
+        else if(a) p+=sprintf(p," %s=%s;\n",n,as_vec2(v,a)); else p+=sprintf(p," %s=P.xy*0.5+0.5;\n",n); break; }
       case 2: { Sym*un=fnd(v,bare,3); if(un&&un->type==2&&strcmp(bare,s->name)) p+=sprintf(p," %s=%s;\n",n,gname(bare)); else p+=sprintf(p," %s=1.0;\n",n); break; }
-      case 4: { if(fnd(v,"a_Normal",4)&&(strstr(s->name,"ormal"))) p+=sprintf(p," %s=a_Normal;\n",n); else { const char*c1=0,*c2=0; for(int z=0;z<v->n;z++){ Sym*t=&v->s[z]; if(t->cls==3&&t->type==4&&!strncmp(t->name,"CO",2)){ if(!c1) c1=t->name; else if(!c2) c2=t->name; } }
+      case 4: { const char *vm=v->hash?shname(v->hash):"";
+        /* iDrive 6 list cursor frame: mixed_co is built from constants inside the SGX binary (material mat_frame1SG: CO1 (1,0.588,0) -> CO2 (1,0.282,0)). The HMI switches to the mat_frame_touch program once the cursor moves, so it gets the same colour.
+           Without it the frame came out pure white. a_TextureCoordinate1.x is the 9-slice stretch weight: 0 on the left edge, 1 on the right. */
+        if(!strcmp(s->name,"mixed_co")&&strstr(vm,"/cursor/Cursor/shaders/mat_frame")&&!strstr(vm,"mat_frame_inner")&&!strstr(vm,"seeall")){ if(fnd(v,"a_TextureCoordinate1",4)) p+=sprintf(p," %s=mix(vec3(1.0,0.588,0.0),vec3(1.0,0.282,0.0),a_TextureCoordinate1.x);\n",n); else p+=sprintf(p," %s=vec3(1.0,0.435,0.0);\n",n); break; }
+        if(fnd(v,"a_Normal",4)&&(strstr(s->name,"ormal"))) p+=sprintf(p," %s=a_Normal;\n",n); else { const char*c1=0,*c2=0; for(int z=0;z<v->n;z++){ Sym*t=&v->s[z]; if(t->cls==3&&t->type==4&&!strncmp(t->name,"CO",2)){ if(!c1) c1=t->name; else if(!c2) c2=t->name; } }
           if(c1&&c2&&fnd(v,"a_Color",4)) p+=sprintf(p," %s=mix(%s,%s,a_Color.r);\n",n,gname(c1),gname(c2)); else if(c1) p+=sprintf(p," %s=%s;\n",n,gname(c1)); else p+=sprintf(p," %s=vec3(1.0);\n",n); } break; }
-      case 5: { if(!strcmp(s->name,"varCoordUVColRG")){ const char*a=fnd(v,"a_TextureCoordinate",4)?"a_TextureCoordinate":"P.xy"; p+=sprintf(p," %s=vec4(%s,1.0,1.0);\n",n,a); }
+      case 5: { if(!strcmp(s->name,"varCoordUVColRG")){ const char*a=fnd(v,"a_TextureCoordinate",4)?as_vec2(v,"a_TextureCoordinate"):"P.xy"; p+=sprintf(p," %s=vec4(%s,1.0,1.0);\n",n,a); }
+        /* two UV sets packed in one vec4 (sport instruments mat_SportTube: xy = texture, zw = position along the arc) */
+        else if(!strncmp(s->name,"varCoord",8)&&fnd(v,"a_TextureCoordinate",4)&&fnd(v,"a_TextureCoordinate1",4)) p+=sprintf(p," %s=vec4(%s,%s);\n",n,as_vec2(v,"a_TextureCoordinate"),as_vec2(v,"a_TextureCoordinate1"));
         else if(fnd(v,"a_Color",4)) { Sym*c=fnd(v,"a_Color",4); p+=sprintf(p,c->type==5?" %s=a_Color;\n":" %s=vec4(a_Color.rgb,1.0);\n",n); }
         else if(fnd(v,"u_color",3)) p+=sprintf(p," %s=u_color;\n",n); else p+=sprintf(p," %s=vec4(1.0);\n",n); break; }
       default: break; }
@@ -80,19 +91,24 @@ static char *gen_fs(ShInfo*f){ char *o=malloc(32768),*p=o; p+=sprintf(p,"#versio
   for(int i=0;tp[i]&&!tex;i++){ Sym*s=fnd(f,tp[i],3); if(s&&(s->type==24||s->type==30)) tex=s->name; }
   for(int i=0;i<f->n&&!tex;i++) if(f->s[i].cls==3&&(f->s[i].type==24||f->s[i].type==30)) tex=f->s[i].name;
   const char *uv=pick_vec2(f); char uvb[80]; if(!uv&&fnd(f,"varCoordUVColRG",6)){ uv="varCoordUVColRG.xy"; }
+  const char *uv4=0; if(!uv) for(int i=0;i<f->n;i++){ Sym*s=&f->s[i]; if(s->cls==6&&s->type==5&&!s->flag&&!strncmp(s->name,"varCoord",8)){ uv4=gname(s->name); snprintf(uvb,sizeof uvb,"%s.xy",uv4); uv=uvb; break; } }
   (void)uvb; p+=sprintf(p,"void main(){\n vec4 col=vec4(1.0);\n");
   if(tex&&uv){ if(fnd(f,"u_useTexture",3)) p+=sprintf(p," if(u_useTexture) col=texture2D(%s,%s);\n",gname(tex),uv); else p+=sprintf(p," col=texture2D(%s,%s);\n",gname(tex),uv);
-    if(fnd(f,"u_useRedChannelAsAlpha",3)) p+=sprintf(p," if(u_useRedChannelAsAlpha) col=vec4(1.0,1.0,1.0,col.r);\n"); }
+    if(fnd(f,"u_useRedChannelAsAlpha",3)) p+=sprintf(p," if(u_useRedChannelAsAlpha) col=vec4(1.0,1.0,1.0,col.r);\n");
+    { Sym*t1=fnd(f,"tex1",3),*vl=fnd(f,"value",3); if(uv4&&t1&&vl&&vl->type==2&&tex&&!strcmp(tex,"tex0")) p+=sprintf(p," col=mix(col,texture2D(tex1,%s.xy),step(%s.z,value));\n",uv4,uv4); } }
   /* text: glyph alpha only */
   if(tex&&fnd(f,"vColor",6)&&(fnd(f,"fFading",6)||fnd(f,"u_opacity",3))) { p+=sprintf(p," col=vec4(vColor.rgb,vColor.a*col.a*max(col.r,max(col.g,col.b)));\n"); if(fnd(f,"u_opacity",3)) p+=sprintf(p," col.a*=u_opacity;\n"); if(fnd(f,"fFading",6)) p+=sprintf(p," col.a*=fFading;\n"); p+=sprintf(p," gl_FragColor=col;\n}\n"); return o; }
   { int hascolor=0; for(int i=0;i<f->n;i++){ Sym*s=&f->s[i]; const char*n=s->name; if(!s->flag&&s->type==4&&(s->cls==6||s->cls==3)&&((!strncmp(n,"CO",2)&&!strstr(n,"TOUCH"))||ieq(n,"mixed_co")||ieq(n,"diffColor")||ieq(n,"base_co")||ieq(n,"cm")||ieq(n,"BLUE")||ieq(n,"col")||ieq(n,"c"))) hascolor=1; }
-    if(hascolor&&tex&&uv) p+=sprintf(p," col.a=col.a*max(col.r,max(col.g,col.b));\n"); }
+    if(hascolor&&tex&&uv) p+=sprintf(p," col.a=col.a*max(col.r,max(col.g,col.b));\n");
+    /* panel shadows (mat_list_shadow, ...): opaque RGB-packed masks with no colour uniform; drawn raw they show up as a green band under every list */
+    else if(tex&&uv&&(fnd(f,"late_stack",3)||fnd(f,"is_stack",3))&&!fnd(f,"vColor",6)) p+=sprintf(p," col=vec4(0.0,0.0,0.0,col.a*max(col.r,max(col.g,col.b)));\n"); }
   for(int i=0;i<f->n;i++){ Sym*s=&f->s[i]; if(s->flag||s->arr>1) continue; const char*n=s->name;
     if(s->type==5&&(s->cls==6||s->cls==3)&&(ieq(n,"vColor")||ieq(n,"col")||ieq(n,"c")||ieq(n,"v_color")||ieq(n,"u_color")||ieq(n,"color"))) p+=sprintf(p," col*=%s;\n",gname(n));
     if(s->type==4&&(s->cls==6||s->cls==3)&&(((!strncmp(n,"CO",2))&&!strstr(n,"TOUCH")&&strcmp(n,"CO_FES"))||ieq(n,"mixed_co")||ieq(n,"mc")||ieq(n,"diffColor")||ieq(n,"c")||ieq(n,"col")||ieq(n,"v_BaseShade")||ieq(n,"color")||ieq(n,"base_co")||ieq(n,"cm")||ieq(n,"BLUE"))) p+=sprintf(p," col.rgb=%s;\n",gname(n));
     if(s->type==2&&(s->cls==6||s->cls==3)&&(ieq(n,"main_menu")||ieq(n,"v_main_menu")||ieq(n,"opacity")||ieq(n,"u_opacity")||ieq(n,"u_Opacity")||ieq(n,"fade")||ieq(n,"vis")||ieq(n,"pre_alpha")||ieq(n,"am")||ieq(n,"alpha")||ieq(n,"intensity"))) p+=sprintf(p," col.a*=%s;\n",gname(n)); }
   { const char *nm=f->hash?shname(f->hash):""; 
     if(strstr(nm,"navi_startup")&&strstr(nm,"mat_bg")) p+=sprintf(p," col.rgb=vec3(0.13,0.13,0.14);\n");
+    if(tex&&uv&&strstr(nm,"popup_shadow")) p+=sprintf(p," col=vec4(0.0,0.0,0.0,col.a*max(col.r,max(col.g,col.b)));\n"); /* same packed-mask shadows on popups (blue channel only, A=255) */
     if(strstr(nm,"mat_list_gloss")) p+=sprintf(p," col=vec4(1.0,1.0,1.0,0.06);\n");
     if(strstr(nm,"mat_frame_inner")) p+=sprintf(p," col.a*=0.25;\n");
     if(strstr(nm,"/CursorBG/")&&strstr(nm,"mat_shadow")) p+=sprintf(p," col.a*=0.25;\n");

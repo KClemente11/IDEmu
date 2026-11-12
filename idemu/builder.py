@@ -4,7 +4,7 @@ Saída em <env>/images/:  boot.ifs  sda.img (QNX4, SO)  sdb.img (QNX6, dados do 
 O conteúdo de sda/sdb vem exclusivamente dos pacotes SWFL; a camada de tradução (bibliotecas do guest, scripts de init,
 tabela de codificação) fica em shim.img e é aplicada na inicialização em memória."""
 import struct, os, re, sys, json, time, hashlib, shutil, stat as st, zlib
-from . import swfl, ifs, codegen
+from . import swfl, ifs, codegen, overlay
 from .qnxfs import mkdisk, mkq6
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -159,6 +159,7 @@ def build(env, env_dir, log=print, progress=lambda pct, step: None):
             if any(r.startswith(x) for x in OS_EXCLUDE) or os.path.basename(r).startswith('._'):
                 continue
             tree[r] = p
+    ov = overlay.apply_sda(tree, env_dir, log)        # arquivos do usuário (overlay/sda, delete.txt): sem a pasta, nada muda
     t = mkdisk.Tree()
     total = 0
     for rel in sorted(tree):
@@ -216,6 +217,7 @@ def build(env, env_dir, log=print, progress=lambda pct, step: None):
             mkq6.from_host(n, bp, lambda p, bp=bp: False)     # inclui id5/ (10 MB): é o que HMI_ID_VERSION=id5 usa
     tpl = os.path.join(work, 'q6_template.img')
     open(tpl, 'wb').write(zlib.decompress(open(os.path.join(HERE, 'qnxfs', 'q6_template.img.z'), 'rb').read()))
+    ovb = overlay.apply_sdb(ro, env_dir, mkq6, log); ov['sdb'] = ovb['sdb']; ov['deleted'] += ovb['deleted']
     mkq6.build(root, tpl, os.path.join(img_dir, 'sdb.img'))
     os.unlink(tpl)
     progress(80, 'Disco de dados pronto')
@@ -231,6 +233,7 @@ def build(env, env_dir, log=print, progress=lambda pct, step: None):
         log('AVISO: este HmiMain3D não é uma das versões validadas; os patches em memória do shim podem falhar.')
     _write_shader_index(ro, os.path.join(img_dir, 'shader_index.txt'))
     manifest['images'] = {n: os.path.getsize(os.path.join(img_dir, n)) for n in ('boot.ifs', 'sda.img', 'sdb.img', 'shim.img')}
+    if ov['sda'] or ov['sdb'] or ov['deleted']: manifest['overlay'] = ov
     manifest['seconds'] = round(time.time() - t0, 1)
     json.dump(manifest, open(os.path.join(env_dir, 'build.json'), 'w'), indent=1)
     shutil.rmtree(work, ignore_errors=True)

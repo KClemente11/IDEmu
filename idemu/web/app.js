@@ -133,6 +133,7 @@
       bf.disabled = bs !== 'ready' && !!e.kind;
       const bv = btn('', 'target', 'VIN', () => IDE.vinDialog(e), 'Ajustar o ambiente ao carro pelo VIN'); bv.disabled = running || bs === 'building';
       actions.push(bf, bv);
+      if (!e.kind) actions.push(btn('', 'layers', 'Overlay', (b) => openOverlay(e, b), 'Abrir a pasta de arquivos gravados nas imagens a cada build'));     // iDrive 5/6
       const bd = btn('', 'copy', 'Duplicar', () => dupEnv(e)); bd.disabled = running;
       const bx = btn('ghost-danger', 'trash', 'Excluir', () => delEnv(e)); bx.disabled = running;
       actions.push(bd, bx);
@@ -203,6 +204,11 @@
       if (!await IDE.confirm({ title: 'Parar o emulador', message: IDE.t('Parar o ambiente "{name}"? O estado do sistema convidado será perdido.', { name: e.name }), confirmLabel: 'Parar', danger: true, icon: 'stop' })) return;
       await IDE.busy(b, async () => {
         try { await post('/api/env/' + e.id + '/stop'); toast('Emulador parado.', 'success'); await IDE.refreshState().catch(() => {}); } catch (er) { toastErr(er); }
+      });
+    }
+    async function openOverlay(e, b) {
+      await IDE.busy(b, async () => {
+        try { await post('/api/env/' + e.id + '/overlay/open'); toast('Pasta do overlay aberta. Depois de mudar os arquivos, recompile o ambiente e inicie com boot completo.', 'info'); } catch (er) { toastErr(er); }
       });
     }
     async function buildEnv(e, b) {

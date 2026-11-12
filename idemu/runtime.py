@@ -238,8 +238,15 @@ class Runtime:
                 time.sleep(0.05)
             else:
                 raise RuntimeError('The Windows renderer did not publish its ports.')
-            with open(ports_file, encoding='ascii') as f:
-                gl_port, input_port = map(int, f.read().split())
+            for attempt in range(40):      # Windows: Defender/indexador pode segurar por um instante o arquivo recém-publicado (PermissionError)
+                try:
+                    with open(ports_file, encoding='ascii') as f:
+                        gl_port, input_port = map(int, f.read().split())
+                    break
+                except (PermissionError, ValueError):
+                    if attempt == 39:
+                        raise
+                    time.sleep(0.05)
             self.input_endpoint = ('127.0.0.1', input_port)
             env['OMAP5_GL_PORT'] = str(gl_port)
             ser, ser2, ser1, ser4, qmp = _loopback_endpoints(5)

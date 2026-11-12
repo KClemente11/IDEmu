@@ -46,7 +46,8 @@ static void send_ctrl(u32 key,int pressed,int repeat,int longp,int unit){ void*(
 extern void *_Z14getHmiProcUnitv(void);
 static u8 *main_pu;      /* 0x20f518 (getHmiProcUnit) usa TLS e devolve 0 em outros threads: guarda o do thread principal */
 /* Ligar o HMI ("auto power on"): no thread principal (updateAliveTime). */
-static void auto_power_on(void){ static int t,done; if(!done&&hook_home()&&++t>AUTO_POWER_TICKS){ done=1; u8*pu=((u8*(*)(void))0x20f518)(); br_log("auto power on"); ((void(*)(void*,u32))0x2152c4)(pu,3); ((u8*)hook_home())[0x33b]=1; ((u8*)hook_home())[0x33a]=0; } }
+static void crash_install(void);
+static void auto_power_on(void){ static int t,done; if(!done&&hook_home()&&++t>AUTO_POWER_TICKS){ done=1; u8*pu=((u8*(*)(void))0x20f518)(); crash_install(); br_log("auto power on"); ((void(*)(void*,u32))0x2152c4)(pu,3); br_log("auto power on: returned"); ((u8*)hook_home())[0x33b]=1; ((u8*)hook_home())[0x33a]=0; } }
 /* Entrada do host: thread própria a cada 15 ms. Antes era lida em updateAliveTime, que com o relógio correto do guest (cntfrq) só roda ~1x/s com a tela parada: cada comando atrasava até 1 s.
    O giro do rotor vai direto para a fila do proc unit (vt[7]). Botões e comandos de depuração usam funções que exigem o thread principal (getHmiProcUnit por TLS, com assert): ficam num anel que
    hk_alive esvazia, e um evento vazio na fila acorda o laço principal para isso acontecer logo. */
@@ -54,15 +55,16 @@ void (*ilm_main_cb)(void); volatile int ilm_main_want;   /* avisos da ILM a entr
 typedef void(*pushf)(void*,void*);
 static void push_ctrl(u32 key,u32 pressed,int param){ u8 *c=((u8*(*)(void))0x24a004)(); *(u32*)(c+0x18)=key; c[0x1c]=pressed; *(int*)(c+0x20)=param; c[0x24]=0; ((pushf)((u32*)*(u32*)main_pu)[7])(main_pu,c); }
 static void touch_send(u32 state,u32 x,u32 y,u32 hms);
+static u32 now_us(void); volatile u32 tm_swap_n,tm_swap_max,tm_swap_lock,tm_pump_lock; extern volatile u32 tm_flush_n,tm_flush_bytes,tm_sync_n,tm_sync_us,tm_sync_max;
 #define RINGN 256
 static u32 ring[RINGN][4]; static volatile u32 ring_w, ring_r;
 void input_pump(void){ u32 *p,*rep; u32 n;
   if(!main_pu) return;
-  LOCK(); p=br_begin(OP_GETINPUT,0); n=br_sync(&rep); static u32 ev[64*4]; if(n>sizeof ev) n=sizeof ev; memcpy(ev,rep,n); UNLOCK();
+  u32 tl0=now_us(); LOCK(); u32 tl1=now_us(); if(tl1-tl0>tm_pump_lock) tm_pump_lock=tl1-tl0; p=br_begin(OP_GETINPUT,0); n=br_sync(&rep); static u32 ev[64*4]; if(n>sizeof ev) n=sizeof ev; memcpy(ev,rep,n); UNLOCK();
   int wake=0;
   for(u32 i=0;i<n/16;i++){ u32 *e=ev+i*4;
     if(e[0]==40){ touch_send(e[1],e[2]&0xffff,e[2]>>16,e[3]==0xffff?0:e[3]); continue; }   /* toque: direto da thread de entrada (a entrega é assíncrona) e sem o evento de controlador que "acordaria" o laço: ele faria o HMI achar que o iDrive tomou a entrada */
-    if(e[0]==2){ push_ctrl(e[1],0,(int)e[2]); continue; }   /* rotary: key=13 right / 14 left, val=detents */
+    if(e[0]==2){ static int nr; if(nr<60){ nr++; br_logx("timing: rotary key/detents/guest ms",e[1],e[2],now_us()/1000u); } push_ctrl(e[1],0,(int)e[2]); continue; }   /* rotary: key=13 right / 14 left, val=detents */
     if(e[0]==30){ void *rd=*(void**)0x3af0a1c; if(rd) ((void(*)(void*,u32))0x2a0c498)(rd,e[1]); continue; }   /* imagem nova do mapa: o que o sinal do LayerManager faria (CHmiSurfaceRedirection::notifyUpdate) */
     if(ring_w-ring_r<RINGN){ memcpy(ring[ring_w%RINGN],e,16); __atomic_add_fetch(&ring_w,1,__ATOMIC_RELEASE); wake=1; }
   }
@@ -135,8 +137,18 @@ static u32 (*eds2_tramp)(void*,u32,u32,u32);
 static u32 hk_eds2(void *t,u32 a,u32 b,u32 c){ if(!disp_svc) br_logx("display service (2)",(u32)t,0,0); disp_svc=(u8*)t; return eds2_tramp(t,a,b,c); }
 static void (*alive_tramp)(void*);
 extern int usleep(unsigned);
-static void *input_thread(void *a){ for(;;){ usleep(15000); input_pump(); } return 0; }
-static void hk_alive(void *t){ static int n; if(t==((void*(*)(void))0x20f518)()){ if(n++<3) br_logx("alive on main unit",(u32)t,0,0); main_pu=(u8*)t; auto_power_on(); input_main((u8*)t); { static int started; static u32 tid[8]; if(!started){ started=1; pthread_create(tid,0,input_thread,0); } } } alive_tramp(t); }
+/* IDEmu diag (timing): guest tick size, how long sleeps really take, and how long one input poll (bridge round trip) takes. Logging only. */
+extern int ClockPeriod(int,const void*,void*,int);
+static u32 now_us(void){ u32 ts[2]={0,0}; clock_gettime(2,ts); return ts[0]*1000000u+ts[1]/1000u; }
+u32 tm_now_us(void){ return now_us(); }
+static void timing_probe(void){ u32 cp[2]={0,0}; int r=ClockPeriod(0,0,cp,0); br_logx("timing: ClockPeriod ns (ret)",cp[0],(u32)r,0);
+  static const u32 req[3]={1000,5000,16000}; for(int k=0;k<3;k++){ u32 mx=0,sum=0; for(int i=0;i<8;i++){ u32 t=now_us(); usleep(req[k]); u32 d=now_us()-t; sum+=d; if(d>mx) mx=d; } br_logx("timing: usleep us req/avg/max",req[k],sum/8,mx); } }
+static void *input_thread(void *a){ timing_probe(); u32 mx=0,n=0,sum=0,t0=now_us();
+  for(;;){ u32 t=now_us(); usleep(15000); u32 t1=now_us(); input_pump(); u32 t2=now_us(); u32 per=t2-t; sum+=per; n++; if(t2-t1>mx) mx=t2-t1;
+    if(t2-t0>10000000u){ br_logx("timing: input poll period avg us / pump max us / polls",sum/(n?n:1),mx,n); br_logx("timing: pump lock-wait max us / swaps / swap max us",tm_pump_lock,tm_swap_n,tm_swap_max);
+      br_logx("timing: swap lock-wait max us / flushes / flushed KB",tm_swap_lock,tm_flush_n,tm_flush_bytes>>10); br_logx("timing: syncs / sync total ms / sync max us",tm_sync_n,tm_sync_us/1000,tm_sync_max);
+      tm_pump_lock=tm_swap_n=tm_swap_max=tm_swap_lock=tm_flush_n=tm_flush_bytes=tm_sync_n=tm_sync_us=tm_sync_max=0; mx=0; n=0; sum=0; t0=t2; } } return 0; }
+static void hk_alive(void *t){ static int n; if(t==((void*(*)(void))0x20f518)()){ if(n++<3) br_logx("alive on main unit",(u32)t,0,0); main_pu=(u8*)t; if(((u8*)t)[0xce]==0x64) auto_power_on();   /* só no proc unit do app (100): hk_alive passa em todo proc unit (getHmiProcUnit é por thread) e ligar pelo tHMI_Platform (102) derrubava o HMI */ input_main((u8*)t); { static int started; static u32 tid[8]; if(!started){ started=1; pthread_create(tid,0,input_thread,0); } } } alive_tramp(t); }
 static void (*lua_err_tramp)(u8*);
 static void hk_luaerr(u8 *L){ u8 *top=*(u8**)(L+8); u32 v=*(u32*)(top-16); u32 tt=*(u32*)(top-8); static int n; if(n<400&&tt==4&&v){ n++; char b[250]; const char*m=(const char*)(v+16); u32 i=0; b[0]='L';b[1]='U';b[2]='A';b[3]=':';b[4]=' '; while(m[i]&&i<230){ b[5+i]=m[i]; i++; } b[5+i]=0; br_log(b); } lua_err_tramp(L); }
 /* IDEmu diag: log every distinct (variant id -> result) the HMI asks; optional overrides from /fs/shim/variants.bin (u32 LE: id | forced<<31) */
@@ -165,6 +177,40 @@ static void crash_h(int sg,u32 *info,u32 *uc){ static int n; if(n++==0){ br_logx
     if((u32)info>0x1000&&(u32)info<0xf0000000){ br_logx("CRASH info",info[0],info[1],info[2]); br_logx("CRASH info2",info[3],info[4],info[5]); }
     if((u32)uc>0x1000&&(u32)uc<0xf0000000){ for(int i=0;i<64;i+=4) if(uc[i]||uc[i+1]||uc[i+2]||uc[i+3]){ br_logx("CRASH ctx",i,uc[i],uc[i+1]); br_logx(" ",uc[i+2],uc[i+3],0); } }
     hk_bt("crash"); } signal(sg,(void(*)(int))0); }
+/* IDEmu: registrador de quedas. Instalado só no "auto power on" (não no boot: ver CRASHHK acima). Na primeira falha registra sinal, thread,
+   endereço da instrução e do acesso, registradores e uma pilha resolvida por dladdr; depois devolve o tratamento anterior e retorna: a instrução
+   falha de novo e o processo termina exatamente como antes (mesmo código de saída). */
+typedef struct { const char *fname; void *fbase; const char *sname; void *saddr; } crash_dli;
+struct crash_sa { void *h; int flags; u32 mask[2]; };          /* layout do sigaction do QNX (libc: abort() usa +8 como máscara) */
+extern int dladdr(void*,crash_dli*); extern int sigaction(int,const void*,void*); extern int raise(int);
+extern u32 pthread_self(void); extern int pthread_getname_np(u32,char*,int);
+static struct crash_sa crash_prev[12]; static volatile int crash_busy;
+static int crash_ptr_ok(u32 p){ return p>0x1000&&p<0xf0000000&&!(p&3); }
+static void crash_log(const char*s,u32 a,u32 b,u32 c){ for(int i=0;i<4000&&br_lock_v;i++) sched_yield(); br_lock_v=0; br_logx(s,a,b,c); }  /* a thread que caiu pode estar com a trava da ponte */
+static int crash_where(u32 a,char*b,int n){ crash_dli di; if(!a||!dladdr((void*)a,&di)||!di.fname) return snprintf(b,n," %x(?)",a);
+  const char*f=di.fname,*q=f; while(*q){ if(*q=='/') f=q+1; q++; } u32 base=(u32)di.fbase; if(base>a) base=0;
+  if(di.sname&&di.saddr) return snprintf(b,n," %x(%s+%x %s+%x)",a,f,a-base,di.sname,a-(u32)di.saddr); return snprintf(b,n," %x(%s+%x)",a,f,a-base); }
+static void crash_h2(int sg,u32 *info,u32 *uc){ int k=(sg>=0&&sg<12)?sg:0;
+  sigaction(sg,&crash_prev[k],0);                                  /* qualquer nova falha (inclusive aqui dentro) vai ao tratamento anterior */
+  if(__atomic_exchange_n(&crash_busy,1,__ATOMIC_ACQ_REL)) return;
+  char b[300]; int n; u32 ip=0,sp=0,lr=0; char nm[48]; nm[0]=0; pthread_getname_np(pthread_self(),nm,sizeof nm);
+  n=snprintf(b,sizeof b,"CRASH sinal %d thread %d (%s)",sg,(int)pthread_self(),nm[0]?nm:"sem nome"); crash_log(b,sg,0,0);
+  if(crash_ptr_ok((u32)info)){ ip=info[4]; crash_log("CRASH si_code fltno addr",info[1],info[3],info[5]); }
+  if(crash_ptr_ok((u32)uc)){ int r=-1; for(int i=15;i<48;i++) if(ip&&uc[i]==ip){ r=i-15; break; }
+    if(r>=0){ u32*g=uc+r; n=snprintf(b,sizeof b,"CRASH regs"); for(int i=0;i<16&&n<280;i++) n+=snprintf(b+n,sizeof b-n," r%d=%x",i,g[i]); crash_log(b,0,0,0); sp=g[13]; lr=g[14]; }
+    else for(int i=0;i<40;i+=4) crash_log("CRASH ctx",uc[i],uc[i+1],uc[i+2]); }
+  n=snprintf(b,sizeof b,"CRASH pc"); crash_where(ip,b+n,sizeof b-n); crash_log(b,0,0,0);
+  n=snprintf(b,sizeof b,"CRASH lr"); crash_where(lr,b+n,sizeof b-n); crash_log(b,0,0,0);
+  /* pilha: palavras que apontam para logo depois de um BL/BLX dentro de código carregado (dladdr confirma antes de ler a instrução) */
+  { volatile u32 here; u32 *s=crash_ptr_ok(sp)?(u32*)sp:(u32*)&here; int c=0; n=snprintf(b,sizeof b,"CRASH stack");
+    for(int i=0;i<2048&&c<12;i++){ u32 w=s[i]; crash_dli di; if(w<0x100000||(w&3)||!dladdr((void*)w,&di)) continue; u32 ins=*(u32*)(w-4);
+      if((ins&0x0f000000)==0x0b000000||(ins&0xfe000000)==0xfa000000||(ins&0x0ffffff0)==0x012fff30){ if(n>200){ crash_log(b,0,0,0); n=snprintf(b,sizeof b,"CRASH stack+"); } n+=crash_where(w,b+n,sizeof b-n); c++; } }
+    crash_log(b,0,0,0); }
+  if(!crash_ptr_ok((u32)info)||(int)info[1]<=0) raise(sg);          /* sinal enviado (kill/raise), não falha de CPU: repete para o tratamento anterior */
+}
+static void crash_install(void){ static int done; if(done) return; done=1; static const int sigs[]={4,8,10,11};
+  for(int i=0;i<4;i++){ struct crash_sa a; memset(&a,0,sizeof a); a.h=(void*)crash_h2; a.flags=2; /* SA_SIGINFO */ sigaction(sigs[i],&a,&crash_prev[sigs[i]]); }
+  br_log("crash logger: instalado"); }
 void install_hooks(void){ static int done; if(done) return; done=1;
 #ifdef CRASHHK   /* diagnóstico de quedas (-DCRASHHK): ligado, o iDrive 5 não termina de subir (sinal capturado no boot); desligado por padrão */
   signal(11,(void(*)(int))crash_h); signal(10,(void(*)(int))crash_h); signal(4,(void(*)(int))crash_h); signal(8,(void(*)(int))crash_h);

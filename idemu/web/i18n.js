@@ -1234,6 +1234,10 @@ window.IDE = window.IDE || {};
     /* ---- VIN, tipo de head unit, arquivos do sistema (envtools.js, vin.py, sysfiles.py) e mensagens do iDrive 4/7/8 ---- */
     ['Arquivos', 'Files'],
     ['Ver os arquivos do sistema do iDrive, descompactados', 'See the iDrive system files, unpacked'],
+    ['Overlay', 'Overlay'],
+    ['Abrir a pasta de arquivos gravados nas imagens a cada build', 'Open the folder of files written into the images on every build'],
+    ['Pasta do overlay aberta. Depois de mudar os arquivos, recompile o ambiente e inicie com boot completo.', 'Overlay folder opened. After changing files, rebuild the environment and start it with a full boot.'],
+    ['o overlay só existe para o iDrive 5/6', 'the overlay only exists for iDrive 5/6'],
     ['Ajustar o ambiente ao carro pelo VIN', 'Match the environment to a car by its VIN'],
     ['tela central', 'central screen'],
     ['banco traseiro (RSE)', 'rear seat (RSE)'],
@@ -1422,6 +1426,7 @@ window.IDE = window.IDE || {};
     ['falha ao extrair %s: %t', 'could not extract %s: %t'],
     ['arquivo grande demais para abrir aqui (%s MB): use "Mostrar no Finder"', 'file too large to open here (%s MB): use "Show in Finder"'],
     ['não consegui abrir o Finder: %s', 'could not open Finder: %s'],
+    ['não consegui abrir a pasta do overlay: %s', 'could not open the overlay folder: %s'],
     ['VIN inválido: são 17 caracteres (você digitou %s)', 'Invalid VIN: it has 17 characters (you typed %s)'],
     ['o QEMU terminou (%s); veja o log do QEMU', 'QEMU exited (%s); see the QEMU log'],
     ['pacotes do iDrive 4 não encontrados (swfl_000003a6 e swfl_00000417 versão %s) na PSdZData nem em ~/Downloads/System files/ID4', 'iDrive 4 packages not found (swfl_000003a6 and swfl_00000417 version %s) in the PSdZData or in ~/Downloads/System files/ID4'],

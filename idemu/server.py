@@ -3,7 +3,7 @@ import os, re, json, time, shutil, sys, threading, traceback, mimetypes, datetim
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from importlib import import_module
 from urllib.parse import urlparse, parse_qs
-from . import catalog, codegen, coding, stats, phone, cluster, vin, sysfiles
+from . import catalog, codegen, coding, stats, phone, cluster, vin, sysfiles, overlay
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENVS = os.path.abspath(os.environ.get('IDEMU_ENVS') or os.path.join(catalog.STATE_DIR, 'environments'))
@@ -165,6 +165,7 @@ class App:
                    'display': '10_25_1440x540', 'hmi_version': 'id6_light', 'navi': 'ece', 'hu_variant': 'professional'}, **(d.get('coding') or {}))
         if not catalog.hu_variant(cd.get('hu_variant')): raise ApiError('tipo de head unit desconhecido: %s' % cd.get('hu_variant'))
         cd['navi'] = codegen.navi_value(cd.get('navi'), cd.get('country'))
+        cd['extra'] = dict(codegen.default_extra(), **(cd.get('extra') or {}))      # o que vier na criação prevalece
         if cd.get('vin') and not re.match(r'^[A-HJ-NPR-Z0-9]{17}$', cd['vin'].upper()): raise ApiError('VIN deve ter 17 caracteres (sem I, O, Q)')
         net = dict({'ssh_port': 2222, 'can_port': 29536, 'gps_port': 29537}, **(d.get('net') or {}))
         env = {'id': eid, 'name': name, 'created': datetime.datetime.now().isoformat(timespec='seconds'),
@@ -320,7 +321,7 @@ class App:
         try:
             if restore: env['coding'] = coding.read_backup(self.env_dir(eid), restore)['coding']; done = []
             else:
-                if reset: env['coding']['extra'] = {}
+                if reset: env['coding']['extra'] = codegen.default_extra()
                 done = coding.apply_changes(env, changes or {})
             tab, rows, warn = codegen.build_table(codegen.profile_for(env))
         except (ValueError, OSError) as e: raise ApiError(str(e))
@@ -620,6 +621,13 @@ class H(BaseHTTPRequestHandler):
             if act in ('update', 'start', 'stop', 'delete', 'duplicate', 'snapshot', 'vin') and m != 'POST': raise ApiError('use POST', 405)
             if act == 'update': return A.update(eid, d)
             if act == 'vin': return A.apply_vin(eid, d.get('vin'), d.get('hu_variant'))
+            if act == 'overlay':           # iDrive 5/6: arquivos do usuário gravados nas imagens a cada build (idemu/overlay.py)
+                env = A.load_env(eid)
+                if env.get('kind'): raise ApiError('o overlay só existe para o iDrive 5/6', 400)
+                sub = P[3] if len(P) > 3 else ''
+                if not sub: return overlay.status(A.env_dir(eid))
+                if sub == 'open' and m == 'POST': return overlay.reveal(A.env_dir(eid))
+                raise ApiError('rota desconhecida', 404)
             if act == 'files':
                 sub = P[3] if len(P) > 3 else ''
                 env = A.load_env(eid)
