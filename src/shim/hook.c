@@ -55,7 +55,7 @@ void (*ilm_main_cb)(void); volatile int ilm_main_want;   /* avisos da ILM a entr
 typedef void(*pushf)(void*,void*);
 static void push_ctrl(u32 key,u32 pressed,int param){ u8 *c=((u8*(*)(void))0x24a004)(); *(u32*)(c+0x18)=key; c[0x1c]=pressed; *(int*)(c+0x20)=param; c[0x24]=0; ((pushf)((u32*)*(u32*)main_pu)[7])(main_pu,c); }
 static void touch_send(u32 state,u32 x,u32 y,u32 hms);
-static u32 now_us(void); volatile u32 tm_swap_n,tm_swap_max,tm_swap_lock,tm_pump_lock; extern volatile u32 tm_flush_n,tm_flush_bytes,tm_sync_n,tm_sync_us,tm_sync_max;
+static u32 now_us(void); volatile u32 tm_swap_n,tm_swap_max,tm_swap_lock,tm_pump_lock,tm_push_max; extern volatile u32 tm_flush_n,tm_flush_bytes,tm_sync_n,tm_sync_us,tm_sync_max;
 #define RINGN 256
 static u32 ring[RINGN][4]; static volatile u32 ring_w, ring_r;
 void input_pump(void){ u32 *p,*rep; u32 n;
@@ -64,7 +64,7 @@ void input_pump(void){ u32 *p,*rep; u32 n;
   int wake=0;
   for(u32 i=0;i<n/16;i++){ u32 *e=ev+i*4;
     if(e[0]==40){ touch_send(e[1],e[2]&0xffff,e[2]>>16,e[3]==0xffff?0:e[3]); continue; }   /* toque: direto da thread de entrada (a entrega é assíncrona) e sem o evento de controlador que "acordaria" o laço: ele faria o HMI achar que o iDrive tomou a entrada */
-    if(e[0]==2){ static int nr; if(nr<60){ nr++; br_logx("timing: rotary key/detents/guest ms",e[1],e[2],now_us()/1000u); } push_ctrl(e[1],0,(int)e[2]); continue; }   /* rotary: key=13 right / 14 left, val=detents */
+    if(e[0]==2){ static int nr; if(nr<60){ nr++; br_logx("timing: rotary key/detents/guest ms",e[1],e[2],now_us()/1000u); } u32 tp=now_us(); push_ctrl(e[1],0,(int)e[2]); tp=now_us()-tp; if(tp>tm_push_max) tm_push_max=tp; continue; }   /* rotary: key=13 right / 14 left, val=detents */
     if(e[0]==30){ void *rd=*(void**)0x3af0a1c; if(rd) ((void(*)(void*,u32))0x2a0c498)(rd,e[1]); continue; }   /* imagem nova do mapa: o que o sinal do LayerManager faria (CHmiSurfaceRedirection::notifyUpdate) */
     if(ring_w-ring_r<RINGN){ memcpy(ring[ring_w%RINGN],e,16); __atomic_add_fetch(&ring_w,1,__ATOMIC_RELEASE); wake=1; }
   }
@@ -146,9 +146,12 @@ static void timing_probe(void){ u32 cp[2]={0,0}; int r=ClockPeriod(0,0,cp,0); br
 static void *input_thread(void *a){ timing_probe(); u32 mx=0,n=0,sum=0,t0=now_us();
   for(;;){ u32 t=now_us(); usleep(15000); u32 t1=now_us(); input_pump(); u32 t2=now_us(); u32 per=t2-t; sum+=per; n++; if(t2-t1>mx) mx=t2-t1;
     if(t2-t0>10000000u){ br_logx("timing: input poll period avg us / pump max us / polls",sum/(n?n:1),mx,n); br_logx("timing: pump lock-wait max us / swaps / swap max us",tm_pump_lock,tm_swap_n,tm_swap_max);
-      br_logx("timing: swap lock-wait max us / flushes / flushed KB",tm_swap_lock,tm_flush_n,tm_flush_bytes>>10); br_logx("timing: syncs / sync total ms / sync max us",tm_sync_n,tm_sync_us/1000,tm_sync_max);
+      br_logx("timing: swap lock-wait max us / flushes / flushed KB",tm_swap_lock,tm_flush_n,tm_flush_bytes>>10); br_logx("timing: syncs / sync total ms / sync max us",tm_sync_n,tm_sync_us/1000,tm_sync_max); br_logx("timing: rotary push max us / main unit id",tm_push_max,main_pu?main_pu[0xce]:0,0); tm_push_max=0;
       tm_pump_lock=tm_swap_n=tm_swap_max=tm_swap_lock=tm_flush_n=tm_flush_bytes=tm_sync_n=tm_sync_us=tm_sync_max=0; mx=0; n=0; sum=0; t0=t2; } } return 0; }
-static void hk_alive(void *t){ static int n; if(t==((void*(*)(void))0x20f518)()){ if(n++<3) br_logx("alive on main unit",(u32)t,0,0); main_pu=(u8*)t; if(((u8*)t)[0xce]==0x64) auto_power_on();   /* só no proc unit do app (100): hk_alive passa em todo proc unit (getHmiProcUnit é por thread) e ligar pelo tHMI_Platform (102) derrubava o HMI */ input_main((u8*)t); { static int started; static u32 tid[8]; if(!started){ started=1; pthread_create(tid,0,input_thread,0); } } } alive_tramp(t); }
+/* Each HMI proc unit thread passes through updateAliveTime (the app unit 100 = 0x64 and tHMI_Platform 102). main_pu used to follow whichever ran last, so knob turns and
+   the wake-up event were pushed into the platform unit about half the time. Once the app unit has shown up, only it is used; until then, the old behaviour. */
+static int app_pu_seen;
+static void hk_alive(void *t){ static int n; if(t==((void*(*)(void))0x20f518)()){ u8 uid=((u8*)t)[0xce]; if(n<6&&(u8*)t!=main_pu){ n++; br_logx("alive on unit (ptr/id)",(u32)t,uid,0); } if(uid==0x64) app_pu_seen=1; if(uid!=0x64&&app_pu_seen){ alive_tramp(t); return; } main_pu=(u8*)t; if(uid==0x64) auto_power_on();   /* só no proc unit do app (100): hk_alive passa em todo proc unit (getHmiProcUnit é por thread) e ligar pelo tHMI_Platform (102) derrubava o HMI */ input_main((u8*)t); { static int started; static u32 tid[8]; if(!started){ started=1; pthread_create(tid,0,input_thread,0); } } } alive_tramp(t); }
 static void (*lua_err_tramp)(u8*);
 static void hk_luaerr(u8 *L){ u8 *top=*(u8**)(L+8); u32 v=*(u32*)(top-16); u32 tt=*(u32*)(top-8); static int n; if(n<400&&tt==4&&v){ n++; char b[250]; const char*m=(const char*)(v+16); u32 i=0; b[0]='L';b[1]='U';b[2]='A';b[3]=':';b[4]=' '; while(m[i]&&i<230){ b[5+i]=m[i]; i++; } b[5+i]=0; br_log(b); } lua_err_tramp(L); }
 /* IDEmu diag: log every distinct (variant id -> result) the HMI asks; optional overrides from /fs/shim/variants.bin (u32 LE: id | forced<<31) */

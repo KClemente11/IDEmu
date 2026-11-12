@@ -580,6 +580,7 @@ class Runtime:
             if self.native:
                 from . import winproc
                 winproc.contain(p)                          # QEMU e renderizador morrem junto com o IDEmu, mesmo se a janela for fechada
+                winproc.unthrottle(p)                       # Windows 11: sem janela = segundo plano; sem isto o timeBeginPeriod(1) do QEMU é ignorado e todo timer do guest vira 15,6 ms
             setattr(self, attr, p)
             return p
 

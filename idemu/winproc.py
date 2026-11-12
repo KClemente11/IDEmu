@@ -79,6 +79,40 @@ def contain(process):
     return True
 
 
+if sys.platform == 'win32':
+    # Windows 11 power throttling. A process with no visible window (QEMU runs with -display none, the renderer and the
+    # server have none either) is treated as background: its timeBeginPeriod(1) request is ignored, so every sleep and
+    # timer wait rounds up to the 15.6 ms system tick, and on battery it can be moved to EcoQoS (efficiency cores, low
+    # clock). The emulated head unit lives on short timers (1 ms sleeps measured at 17-77 ms in the guest), so opt out.
+    class _PowerThrottlingState(ctypes.Structure):
+        _fields_ = [('Version', wintypes.ULONG), ('ControlMask', wintypes.ULONG), ('StateMask', wintypes.ULONG)]
+
+    _ProcessPowerThrottling = 4
+    _THROTTLE_EXECUTION_SPEED = 0x1
+    _THROTTLE_IGNORE_TIMER_RESOLUTION = 0x4
+    try:
+        _kernel.SetProcessInformation.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD)
+        _kernel.SetProcessInformation.restype = wintypes.BOOL
+    except AttributeError:          # older than Windows 8
+        pass
+    _kernel.GetCurrentProcess.restype = wintypes.HANDLE
+
+
+def unthrottle(process=None):
+    """Keep Windows from throttling a process we depend on for timing (None = this process).
+    Control bits set with the state bits clear = always honour timer resolution requests and never use EcoQoS.
+    Returns the mask that took effect (0 if none)."""
+    if sys.platform != 'win32' or not hasattr(_kernel, 'SetProcessInformation'):
+        return 0
+    handle = _kernel.GetCurrentProcess() if process is None else int(process._handle)
+    for mask in (_THROTTLE_EXECUTION_SPEED | _THROTTLE_IGNORE_TIMER_RESOLUTION, _THROTTLE_EXECUTION_SPEED):
+        state = _PowerThrottlingState(1, mask, 0)
+        if _kernel.SetProcessInformation(handle, _ProcessPowerThrottling, ctypes.byref(state), ctypes.sizeof(state)):
+            return mask
+    print('[idemu] could not turn off power throttling (%s)' % ctypes.WinError(ctypes.get_last_error()), file=sys.stderr, flush=True)
+    return 0
+
+
 def on_console_close(callback):
     """Run callback when the console window closes or the user logs off. Ctrl+C keeps Python's default handling."""
     global _console_handler
