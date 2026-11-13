@@ -131,6 +131,7 @@ class Runtime:
         self.ctl = os.path.join(self.run, 'ctl')
         self.state = 'stopped'; self.err = None; self.t0 = None; self.step = ''; self.pct = 0
         self.gl = self.q = None; self.mux = None; self.can = self.gps = self.ssh = None
+        self.guest_files = {}         # guest path -> {'data': bytes | None, 't'}: files the shim watches (/fs/shim/watch.cfg)
         self.frame_path = os.path.join(self.run, 'frame.rgb'); self._fm = None
         self._png = (None, None); self.con = collections.deque(maxlen=2000)
         self._cmd_lock = threading.Lock(); self.fps_t = collections.deque(maxlen=400); self._life = threading.Lock()
@@ -222,6 +223,13 @@ class Runtime:
         if catalog.WSL and os.path.isdir(B + 'lib'):
             env['LD_LIBRARY_PATH'] = os.pathsep.join(filter(None, (B + 'lib', env.get('LD_LIBRARY_PATH'))))
         if self.env.get('show_window'): env['GLHOST_SHOW'] = '1'
+        from . import builder
+        if builder.m_brand(self.env): env['GLHOST_BRAND'] = 'bmw_m'     # glhost dims the shared background layers and the tile backgrounds for the BMW M theme (src/glhost/shgen.c)
+        if builder.m_brand(self.env):     # tuning knobs for that (env.json, read when the renderer starts): "glhost_bgmask": "sky=r,glow=g,hl=r,line=g,subline=g", "glhost_bgdim": 0.25
+            for k, v in (('GLHOST_BGMASK', self.env.get('glhost_bgmask')), ('GLHOST_BGDIM', self.env.get('glhost_bgdim'))):
+                if isinstance(v, (str, int, float)) and str(v).strip(): env[k] = str(v).strip()
+        if self.env.get('glhost_record') and not record and not resume:     # debugging: whole GL stream of this run to logs/gl.rec (replay it with GLHOST_REPLAY to render offline)
+            env['GLHOST_RECORD'] = os.path.join(self.logd, 'gl.rec')
         S = self.snap_dir + '/'
         if resume: env['GLHOST_REPLAY'] = S + 'gl.rec'
         if record:
@@ -715,6 +723,11 @@ class DataChannel:
         threading.Thread(target=self._run, daemon=True).start()
     def _send(self, text):
         with self.wlock: self.sock.sendall(text.encode())
+    def guest_line(self, line):
+        """One command line for the guest agent (agent.sh), e.g. 'N SHOW|LEFT|250|m|MAIN STREET'. False when the UART is not connected."""
+        if self.sock is None: return False
+        try: self._send(line.rstrip('\n') + '\n'); return True
+        except OSError: return False
     def _reader(self):
         buf = b''
         while not self.stop_ev.is_set():
@@ -725,6 +738,11 @@ class DataChannel:
             while b'\n' in buf:
                 line, buf = buf.split(b'\n', 1)
                 p = line.strip().split()
+                if len(p) == 3 and p[0] == b'F':                               # a watched guest file changed (src/shim/hsfz.c)
+                    try: data = None if p[2] == b'-' else b'' if p[2] == b'.' else bytes.fromhex(p[2].decode())
+                    except ValueError: continue
+                    self.rt.guest_files[p[1].decode('utf-8', 'replace')] = {'data': data, 't': time.time()}
+                    continue
                 if len(p) < 4 or p[0] != b'Q' or not self.uds: continue      # anything else is the tty echoing our own lines
                 try:
                     seq, src, tgt, req = p[1].decode(), int(p[2], 16), int(p[3], 16), bytes.fromhex(p[4].decode() if len(p) > 4 else '')
@@ -739,7 +757,7 @@ class DataChannel:
     def _run(self):
         try: self.sock = _connect(self.uart_sock, 90)
         except Exception: return
-        if self.uds: threading.Thread(target=self._reader, daemon=True).start()
+        threading.Thread(target=self._reader, daemon=True).start()
         while self.push and not self.stop_ev.is_set():
             time.sleep(0.25)
             if self.rt.state != 'running': 

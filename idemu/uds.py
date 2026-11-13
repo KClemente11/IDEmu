@@ -26,7 +26,8 @@ A <value> is one of
   {"bytes": 2, "scale": 0.0078125, "offset": 0, "signed": false, "value": 101.3}
                                                     physical value -> raw = (value - offset) / scale, big-endian
   ... plus "wave": {"min": 100, "max": 240, "period": 8} to sweep between min and max (seconds per cycle)
-  {"length": 36, "fields": [{"name": "...", "pos": 0, "bytes": 2, ...}, ...]}   a record with several values
+  {"length": 40, "fill": 255, "fields": [{"name": "...", "pos": 4, "bytes": 2, ...}, ...]}
+                                                    a composite record, with optional fill byte
 Optional keys: "name", "unit", "mask" (raw & mask), "little" (little-endian).
 """
 import collections
@@ -78,35 +79,369 @@ PRESETS['b58'] = {
 }
 PRESETS['s63tu'] = {
     'label': 'S63TU (s63tu_r0.prg STATUS_MESSWERTE)',
-    'note': 'Record layout read from the STATUS_MESSWERTE job. The request bytes in the decompile start "22 40": the DID '
-            'is assumed to be 4000. Field positions count from the first data byte after the DID, assuming the long '
-            '(4-byte) EDIABAS header; check both against the .prg before relying on them.',
+    'note': 'S63TU Master STATUS_MESSWERTE, confirmed on live DME 0x12: UDS request 22 40 00 returns '
+            '62 40 00 + 40 data bytes. Offsets are zero-based from the first byte after 62 40 00; '
+            'the first four data bytes and data bytes 6..7 are FF in recorded captures.',
     'ecus': {
         '12': {'name': 'DME', 'dids': {
-            '4000': {'name': 'STATUS_MESSWERTE', 'length': 36, 'fields': [
-                _v('STAT_LR1_MW (lambda bank 1)', '', 2, 0.000244140625, 1.0, pos=0),
-                _v('STAT_VFZG_MW (vehicle speed)', 'km/h', 2, 0.0078125, wave=(0, 120, 20), pos=4),
-                _v('STAT_NMOT_W_MW (engine speed)', '1/min', 2, 0.25, wave=(800, 6500, 6), pos=6),
-                _v('STAT_NSOL_MW (target idle)', '1/min', 2, 0.25, 700, pos=8),
-                _v('STAT_CAM_IN (intake cam)', 'degCA', 2, 0.0078125, 20, signed=True, pos=10),
-                _v('STAT_CAM_EX (exhaust cam)', 'degCA', 2, 0.0078125, -15, signed=True, pos=12),
-                _v('STAT_TIA (intake air)', 'C', 1, 0.75, 30, offset=-48, pos=14),
-                _v('STAT_TMOT (coolant)', 'C', 1, 0.75, 90, offset=-48, pos=15),
-                _v('STAT_IGA_IGC (ignition angle)', 'deg', 2, 0.1, wave=(2, 25, 7), signed=True, pos=16),
-                _v('STAT_TPS_AV_1 (throttle)', '% DK', 2, 0.0244140625, wave=(2, 80, 6), signed=True, pos=18),
-                _v('STAT_MAF_KGH_MES_BAS (air mass)', 'kg/h', 2, 0.1, wave=(40, 900, 6), signed=True, pos=20),
-                _v('STAT_TQI_AV (torque)', 'Nm', 2, 0.5, wave=(40, 650, 6), signed=True, pos=22),
-                _v('STAT_VB (battery)', 'V', 1, 0.0942, 14.1, pos=24),
-                _v('STAT_V_PVS_1 (pedal sensor)', 'V', 2, 0.0048828125, 0.75, pos=25, mask=1023),
-                _v('STAT_TMOTLINF', 'C', 1, 0.75, 90, offset=-48, pos=27),
-                _v('STAT_NL_1', 'V', 2, 0.0048828125, 1.0, pos=28),
-                _v('STAT_NL_4', 'V', 2, 0.0048828125, 1.0, pos=30),
-                _v('STAT_NL_3', 'V', 2, 0.0048828125, 1.0, pos=32),
-                _v('STAT_NL_2', 'V', 2, 0.0048828125, 1.0, pos=34),
+            '4000': {'name': 'STATUS_MESSWERTE', 'length': 40, 'fill': 0xFF, 'fields': [
+                _v('STAT_LR1_MW (lambda regulator 1)', '', 2, 0.000244140625, 1.0, pos=4),
+                _v('STAT_VFZG_MW (vehicle speed)', 'km/h', 2, 0.0078125, wave=(0, 120, 20), pos=8),
+                _v('STAT_NMOT_W_MW (engine speed)', '1/min', 2, 0.25, wave=(800, 6500, 6), pos=10),
+                _v('STAT_NSOL_MW (target idle)', '1/min', 2, 0.25, 700, pos=12),
+                _v('STAT_CAM_IN (intake cam)', 'degCA', 2, 0.0078125, 20, signed=True, pos=14),
+                _v('STAT_CAM_EX (exhaust cam)', 'degCA', 2, 0.0078125, -15, signed=True, pos=16),
+                _v('STAT_TIA (intake air)', 'C', 1, 0.75, 30, offset=-48, pos=18),
+                _v('STAT_TMOT (coolant)', 'C', 1, 0.75, 90, offset=-48, pos=19),
+                _v('STAT_IGA_IGC (ignition angle)', 'deg', 2, 0.1, wave=(2, 25, 7), signed=True, pos=20),
+                _v('STAT_TPS_AV_1 (throttle)', '% DK', 2, 0.0244140625, wave=(2, 80, 6), signed=True, pos=22),
+                _v('STAT_MAF_KGH_MES_BAS (air mass)', 'kg/h', 2, 0.1, wave=(40, 900, 6), signed=True, pos=24),
+                _v('STAT_TQI_AV (torque)', 'Nm', 2, 0.5, wave=(40, 650, 6), signed=True, pos=26),
+                _v('STAT_VB (battery)', 'V', 1, 0.0942, 14.1, pos=28),
+                _v('STAT_V_PVS_1 (pedal sensor)', 'V', 2, 0.0048828125, 0.75, pos=29, mask=1023),
+                _v('STAT_TMOTLINF', 'C', 1, 0.75, 90, offset=-48, pos=31),
+                _v('STAT_NL_1', 'V', 2, 0.0048828125, 1.0, pos=32),
+                _v('STAT_NL_4', 'V', 2, 0.0048828125, 1.0, pos=34),
+                _v('STAT_NL_3', 'V', 2, 0.0048828125, 1.0, pos=36),
+                _v('STAT_NL_2', 'V', 2, 0.0048828125, 1.0, pos=38),
             ]},
+            # Standalone S63TU Master DID responses tested on the M6. These are
+            # deliberately independent of the grouped 4000 measurement block.
+            # The real DME returned FFFF for 4A49 in some captures; this preset
+            # emits a valid simulated signed value, not the unavailable marker.
+            '4201': _v('S63TU ambient pressure', 'kPa', 2, 1 / 256.0, 99.2),
+            '4205': _v('S63TU charge pressure (absolute)', 'kPa', 2, 1 / 128.0,
+                       wave=(99.2, 240.0, 8)),
+            '5889': _v('S63TU lambda (measured)', '', 2, 16 / 65535.0,
+                       wave=(0.85, 1.02, 6)),
+            '4A49': _v('S63TU ignition timing (standalone)', 'deg', 2, 0.1,
+                       signed=True, wave=(2.0, 25.0, 7)),
+            '580F': _v('S63TU intake air temperature', 'C', 1, 0.75, 30, offset=-48),
+            '4300': _v('S63TU coolant temperature', 'C', 1, 0.75, 90, offset=-48),
         }},
     },
 }
+
+# DKG_10 PRG service-22 payload layouts (zero-based DID data offsets).
+# Source: DKG_10 RES_0xDE30, RES_0xDE50 and RES_0xDE51 field definitions.
+# Layout columns: signal | offset | width | signedness | PRG multiplier |
+#                 PRG divisor | PRG addition | units.
+# These are complete PRG-defined payloads, not guessed standalone DIDs.
+_DKG_10_LAYOUTS = {
+    'DE30': '''
+STAT_MOTORDREHZAHL_WERT|0|2|u|1|4|0|1/min
+STAT_EINGANGSDREHZAHL1_WERT|2|2|u|1|4|0|1/min
+STAT_EINGANGSDREHZAHL2_WERT|4|2|u|1|4|0|1/min
+STAT_AUSGANGSDREHZAHL_WERT|6|2|s|1|2|0|1/min
+STAT_GESCHWINDIGKEIT_WERT|8|2|s|1|40|0|km/h
+STAT_RADGESCHWINDIGKEIT_VL_WERT|10|2|s|1|16|0|km/h
+STAT_RADGESCHWINDIGKEIT_VR_WERT|12|2|s|1|16|0|km/h
+STAT_RADGESCHWINDIGKEIT_HL_WERT|14|2|s|1|16|0|km/h
+STAT_RADGESCHWINDIGKEIT_HR_WERT|16|2|s|1|16|0|km/h
+STAT_GESCHWINDIGKEIT_HINTERACHSE_WERT|18|2|s|1|16|0|km/h
+STAT_MOTORTEMPERATUR_WERT|20|2|s|1|1|0|°C
+STAT_MOTOROELTEMPERATUR_WERT|22|2|s|1|1|0|°C
+STAT_KUPPLUNGSOELTEMPERATUR_WERT|24|2|s|1|1|0|°C
+STAT_SG_TEMPERATUR_WERT|26|2|s|1|1|0|°C
+STAT_UMGEBUNGSTEMPERATUR_WERT|28|2|s|1|1|0|°C
+STAT_UBAT_WERT|30|2|u|1|2048|0|V
+STAT_SPANNUNGSVERSORGUNG_7V4_WERT|32|2|u|1|2048|0|V
+STAT_SENSORSPANNUNGSVERSORGUNG_VCC_WERT|34|2|u|1|2048|0|V
+STAT_SENSORSPANNUNGSVERSORGUNG_SV1_WERT|36|2|u|1|2048|0|V
+STAT_SENSORSPANNUNGSVERSORGUNG_SV2_WERT|38|2|u|1|2048|0|V
+STAT_ISTSTROM_MAGNETVENTIL_PV1_WERT|40|2|s|1|1000|0|A
+STAT_ISTSTROM_MAGNETVENTIL_PV2_WERT|42|2|s|1|1000|0|A
+STAT_ISTSTROM_MAGNETVENTIL_PV3_WERT|44|2|s|1|1000|0|A
+STAT_ISTSTROM_MAGNETVENTIL_PV4_WERT|46|2|s|1|1000|0|A
+STAT_ISTSTROM_MAGNETVENTIL_PV6_WERT|48|2|s|1|1000|0|A
+STAT_ISTSTROM_MAGNETVENTIL_PV7_WERT|50|2|s|1|1000|0|A
+STAT_SOLLSTROM_MAGNETVENTIL_PV1_WERT|52|2|s|1|1000|0|A
+STAT_SOLLSTROM_MAGNETVENTIL_PV2_WERT|54|2|s|1|1000|0|A
+STAT_SOLLSTROM_MAGNETVENTIL_PV3_WERT|56|2|s|1|1|0|mA
+STAT_SOLLSTROM_MAGNETVENTIL_PV4_WERT|58|2|s|1|1|0|mA
+STAT_SOLLSTROM_MAGNETVENTIL_PV6_WERT|60|2|s|1|1000|0|A
+STAT_SOLLSTROM_MAGNETVENTIL_PV7_WERT|62|2|s|1|1000|0|A
+STAT_ISTDRUCK_KUPPLUNG1_WERT|64|2|s|1|100|0|bar
+STAT_ISTDRUCK_KUPPLUNG2_WERT|66|2|s|1|100|0|bar
+STAT_SOLLDRUCK_KUPPLUNG1_WERT|68|2|s|1|100|0|bar
+STAT_SOLLDRUCK_KUPPLUNG2_WERT|70|2|s|1|100|0|bar
+STAT_ISTMOMENT_KUPPLUNG1_WERT|72|2|s|1|8|0|Nm
+STAT_ISTMOMENT_KUPPLUNG2_WERT|74|2|s|1|8|0|Nm
+STAT_SOLLMOMENT_KUPPLUNG1_WERT|76|2|s|1|8|0|Nm
+STAT_SOLLMOMENT_KUPPLUNG2_WERT|78|2|s|1|8|0|Nm
+STAT_ISTPOSITION_SCHALTSTANGE_6_4_WERT|80|2|s|1|100|0|mm
+STAT_ISTPOSITION_SCHALTSTANGE_5_7_WERT|82|2|s|1|100|0|mm
+STAT_ISTPOSITION_SCHALTSTANGE_2_R_WERT|84|2|s|1|100|0|mm
+STAT_ISTPOSITION_SCHALTSTANGE_1_3_WERT|86|2|s|1|100|0|mm
+STAT_SOLLPOSITION_SCHALTSTANGE_6_4_NR|88|1|u|1|1|0|0-n
+STAT_SOLLPOSITION_SCHALTSTANGE_5_7_NR|89|1|u|1|1|0|0-n
+STAT_SOLLPOSITION_SCHALTSTANGE_2_R_NR|90|1|u|1|1|0|0-n
+STAT_SOLLPOSITION_SCHALTSTANGE_1_3_NR|91|1|u|1|1|0|0-n
+STAT_FAHRPEDAL_WERT|92|1|u|0.4|1|0|%
+STAT_MOTORISTMOMENT_WERT|93|2|s|1|8|0|A
+STAT_AQUER_CAN_WERT|95|2|s|1|40|0|m/s²
+STAT_KILOMETERSTAND_WERT|97|4|u|1|1|0|km
+STAT_HYDRAULIKDRUCK_WERT|101|2|s|1|100|0|bar
+STAT_PARKSPERRE_AKTIV|103|1|u|1|1|0|0/1
+STAT_PARKSPERRE_SENSOR1_EIN|104|1|u|1|1|0|0/1
+STAT_PARKSPERRE_SENSOR2_EIN|105|1|u|1|1|0|0/1
+STAT_KL15_EIN|106|1|u|1|1|0|0/1
+STAT_KUPPLUNG1_NR|107|1|u|1|1|0|0-n
+STAT_KUPPLUNG2_NR|108|1|u|1|1|0|0-n
+STAT_ISTGANG_NR|109|1|u|1|1|0|0-n
+STAT_SCHALTSTANGE_6_4_NR|110|1|u|1|1|0|0-n
+STAT_SCHALTSTANGE_5_7_NR|111|1|u|1|1|0|0-n
+STAT_SCHALTSTANGE_2_R_NR|112|1|u|1|1|0|0-n
+STAT_SCHALTSTANGE_1_3_NR|113|1|u|1|1|0|0-n
+STAT_GETRIEBEPOSITION_WERT|114|1|u|1|1|0|
+STAT_OBD_STEUERFUNKTION|115|1|u|1|1|0|0-n
+STAT_SPORT_TASTER_EIN|116|1|u|1|1|0|0/1
+STAT_PROGRAMMINFO_WERT|117|1|u|1|1|0|
+STAT_GANGANZEIGE_WERT|118|1|u|1|1|0|
+STAT_WAEHLHEBELANZEIGE_WERT|119|1|u|1|1|0|
+STAT_MIL_WERT|120|1|u|1|1|0|
+STAT_KL15_CAN_EIN|121|1|u|1|1|0|0/1
+STAT_BREMSLICHTSCHALTER_EIN|122|1|u|1|1|0|0/1
+STAT_ENDSTUFE_FEHLER|123|1|u|1|1|0|0/1
+STAT_ISTGANG_TEILGETRIEBE1_NR|124|1|u|1|1|0|0-n
+STAT_ISTGANG_TEILGETRIEBE2_NR|125|1|u|1|1|0|0-n
+STAT_FESTSTELLBREMSE_EIN|126|1|u|1|1|0|0/1
+STAT_SCHALTDIAGRAMM_AGS_WERT|127|1|u|1|1|0|
+STAT_ANTRIEBSDREHZAHLSENSOR_WERT|128|2|s|1|4|0|
+''',
+    'DE50': '''
+STAT_FAHRZEUGTYP|0|1|u|1|1|0|0/1
+STAT_ANZ_LOESCHUNGEN_WERT|1|2|u|1|1|0|
+STAT_KM_STAND_LETZTER_LOESCHUNG_WERT|3|4|u|1|1|0|
+STAT_ANZ_RENNSTARTS_WERT|7|2|u|1|1|0|
+STAT_ANZ_SCHALTUNG_GANG_1_WERT|9|4|u|1|1|0|
+STAT_ANZ_SCHALTUNG_GANG_2_WERT|13|4|u|1|1|0|
+STAT_ANZ_SCHALTUNG_GANG_3_WERT|17|4|u|1|1|0|
+STAT_ANZ_SCHALTUNG_GANG_4_WERT|21|4|u|1|1|0|
+STAT_ANZ_SCHALTUNG_GANG_5_WERT|25|4|u|1|1|0|
+STAT_ANZ_SCHALTUNG_GANG_6_WERT|29|4|u|1|1|0|
+STAT_ANZ_SCHALTUNG_GANG_7_WERT|33|4|u|1|1|0|
+STAT_ANZ_SCHALTUNG_GANG_R_WERT|37|4|u|1|1|0|
+STAT_ANZ_SMOKIE_BURNOUTS_WERT|41|2|u|1|1|0|
+STAT_ANZ_EINLEGEHAENGER_GANG_1_WERT|43|1|u|1|1|0|
+STAT_ANZ_EINLEGEHAENGER_GANG_2_WERT|44|1|u|1|1|0|
+STAT_ANZ_EINLEGEHAENGER_GANG_3_WERT|45|1|u|1|1|0|
+STAT_ANZ_EINLEGEHAENGER_GANG_4_WERT|46|1|u|1|1|0|
+STAT_ANZ_EINLEGEHAENGER_GANG_5_WERT|47|1|u|1|1|0|
+STAT_ANZ_EINLEGEHAENGER_GANG_6_WERT|48|1|u|1|1|0|
+STAT_ANZ_EINLEGEHAENGER_GANG_7_WERT|49|1|u|1|1|0|
+STAT_ANZ_EINLEGEHAENGER_GANG_R_WERT|50|1|u|1|1|0|
+STAT_AUFENTHALTSDAUER_OELSUMPF_KLEINER_MINUS_30_GRAD_WERT|51|4|u|1|1|0|min
+STAT_AUFENTHALTSDAUER_OELSUMPF_MINUS_30_BIS_MINUS_20_GRAD_WERT|55|4|u|1|1|0|min
+STAT_AUFENTHALTSDAUER_OELSUMPF_MINUS_20_BIS_MINUS_10_GRAD_WERT|59|4|u|1|1|0|min
+STAT_AUFENTHALTSDAUER_OELSUMPF_MINUS_10_BIS_0_GRAD_WERT|63|4|u|1|1|0|min
+STAT_AUFENTHALTSDAUER_OELSUMPF_0_BIS_10_GRAD_WERT|67|4|u|1|1|0|min
+STAT_AUFENTHALTSDAUER_OELSUMPF_10_BIS_20_GRAD_WERT|71|4|u|1|1|0|min
+STAT_AUFENTHALTSDAUER_OELSUMPF_20_BIS_30_GRAD_WERT|75|4|u|1|1|0|min
+STAT_AUFENTHALTSDAUER_OELSUMPF_30_BIS_40_GRAD_WERT|79|4|u|1|1|0|min
+STAT_AUFENTHALTSDAUER_OELSUMPF_40_BIS_50_GRAD_WERT|83|4|u|1|1|0|min
+STAT_AUFENTHALTSDAUER_OELSUMPF_50_BIS_60_GRAD_WERT|87|4|u|1|1|0|min
+STAT_AUFENTHALTSDAUER_OELSUMPF_60_BIS_70_GRAD_WERT|91|4|u|1|1|0|min
+STAT_AUFENTHALTSDAUER_OELSUMPF_70_BIS_80_GRAD_WERT|95|4|u|1|1|0|min
+STAT_AUFENTHALTSDAUER_OELSUMPF_80_BIS_90_GRAD_WERT|99|4|u|1|1|0|min
+STAT_AUFENTHALTSDAUER_OELSUMPF_90_BIS_100_GRAD_WERT|103|4|u|1|1|0|min
+STAT_AUFENTHALTSDAUER_OELSUMPF_100_BIS_110_GRAD_WERT|107|4|u|1|1|0|min
+STAT_AUFENTHALTSDAUER_OELSUMPF_110_BIS_120_GRAD_WERT|111|4|u|1|1|0|min
+STAT_AUFENTHALTSDAUER_OELSUMPF_120_BIS_130_GRAD_WERT|115|4|u|1|1|0|min
+STAT_AUFENTHALTSDAUER_OELSUMPF_130_BIS_140_GRAD_WERT|119|4|u|1|1|0|min
+STAT_AUFENTHALTSDAUER_OELSUMPF_140_BIS_150_GRAD_WERT|123|4|u|1|1|0|min
+STAT_AUFENTHALTSDAUER_OELSUMPF_150_BIS_160_GRAD_WERT|127|4|u|1|1|0|min
+STAT_ANZ_FAHRSTUFE_ANFORDERN_OHNE_BREMSE_WERT|131|1|u|1|1|0|
+STAT_ANZ_R_GANG_ANFORDERN_UEBER_V_SCHWELLE_WERT|132|1|u|1|1|0|
+STAT_ANZ_AUTO_P_FAHRZEUGVERLASSEN_WERT|133|1|u|1|1|0|
+STAT_ANZ_P_ANFORDERN_V_UEBER_SCHWELLE_WERT|134|1|u|1|1|0|
+STAT_KUPPLUNGSTEMPERATUR_K1_MAX_WERT|135|2|s|1|1|0|°C
+STAT_ANZ_K1_MAX_TEMPERATUR_WERT|137|4|u|1|1|0|
+STAT_KUPPLUNGSTEMPERATUR_K2_MAX_WERT|141|2|s|1|1|0|°C
+STAT_ANZ_K2_MAX_TEMPERATUR_WERT|143|4|u|1|1|0|
+STAT_ABSPRITZSSENSORTEMPERATUR_MAX_WERT|147|2|s|1|1|0|°C
+STAT_ANZ_MAX_TEMPERATUR_ABSPRITZSENSOR_WERT|149|4|u|1|1|0|
+STAT_AUFENTHALTSDAUER_FAHRMODUS_1_WERT|153|4|u|1|1|0|s
+STAT_AUFENTHALTSDAUER_FAHRMODUS_2_WERT|157|4|u|1|1|0|s
+STAT_AUFENTHALTSDAUER_FAHRMODUS_3_WERT|161|4|u|1|1|0|s
+STAT_AUFENTHALTSDAUER_FAHRMODUS_4_WERT|165|4|u|1|1|0|s
+STAT_AUFENTHALTSDAUER_FAHRMODUS_5_WERT|169|4|u|1|1|0|s
+STAT_AUFENTHALTSDAUER_FAHRMODUS_6_WERT|173|4|u|1|1|0|s
+STAT_AUFENTHALTSDAUER_FAHRMODUS_7_WERT|177|4|u|1|1|0|s
+STAT_AUFENTHALTSDAUER_FAHRMODUS_8_WERT|181|4|u|1|1|0|s
+STAT_AUFENTHALTSDAUER_FAHRMODUS_9_WERT|185|4|u|1|1|0|s
+STAT_AUFENTHALTSDAUER_FAHRMODUS_10_WERT|189|4|u|1|1|0|s
+STAT_AUFENTHALTSDAUER_FAHRMODUS_11_WERT|193|4|u|1|1|0|s
+''',
+    'DE51': '''
+STAT_ANZ_ZAEHLER_0_PV6_ADAPTIONEN_WERT|0|1|u|1|1|0|
+STAT_ANZ_ZAEHLER_1_PV6_ADAPTIONEN_WERT|1|1|u|1|1|0|
+STAT_ANZ_ZAEHLER_2_PV6_ADAPTIONEN_WERT|2|1|u|1|1|0|
+STAT_ANZ_ZAEHLER_K1_ADAPTIONEN_WERT|3|2|u|1|1|0|
+STAT_ANZ_ZAEHLER_K2_ADAPTIONEN_WERT|5|2|u|1|1|0|
+STAT_KILOMETERSTAND_LETZTER_K1_ADAPTION_WERT|7|4|u|1|1|0|km
+STAT_KILOMETERSTAND_LETZTER_K2_ADAPTION_WERT|11|4|u|1|1|0|km
+STAT_KISSPOINT_K1_MIN_WERT|15|2|s|1|1|0|
+STAT_KISSPOINT_K2_MIN_WERT|17|2|s|1|1|0|
+STAT_KILOMETERSTAND_K1_MIN_WERT|19|4|u|1|1|0|km
+STAT_KILOMETERSTAND_K2_MIN_WERT|23|4|u|1|1|0|km
+STAT_KISSPOINT_K1_MAX_WERT|27|2|s|1|1|0|
+STAT_KISSPOINT_K2_MAX_WERT|29|2|s|1|1|0|
+STAT_KILOMETERSTAND_K1_MAX_WERT|31|4|u|1|1|0|km
+STAT_KILOMETERSTAND_K2_MAX_WERT|35|4|u|1|1|0|km
+STAT_KUPPLUNGSADAPTIONSKENNLINIE_K1_MAX50_WERT|39|1|s|1|1|0|
+STAT_KUPPLUNGSADAPTIONSKENNLINIE_K1_MIN50_WERT|40|1|s|1|1|0|
+STAT_KUPPLUNGSADAPTIONSKENNLINIE_K1_MAX300_WERT|41|1|s|1|1|0|
+STAT_KUPPLUNGSADAPTIONSKENNLINIE_K1_MIN300_WERT|42|1|s|1|1|0|
+STAT_KUPPLUNGSADAPTIONSKENNLINIE_K2_MAX50_WERT|43|1|s|1|1|0|
+STAT_KUPPLUNGSADAPTIONSKENNLINIE_K2_MIN50_WERT|44|1|s|1|1|0|
+STAT_KUPPLUNGSADAPTIONSKENNLINIE_K2_MAX300_WERT|45|1|s|1|1|0|
+STAT_KUPPLUNGSADAPTIONSKENNLINIE_K2_MIN300_WERT|46|1|s|1|1|0|
+STAT_KUPPLUNGSADAPTIONSKENNLINIE_K1_300_BEI_MAX50_WERT|47|1|s|1|1|0|
+STAT_KUPPLUNGSADAPTIONSKENNLINIE_K1_300_BEI_MIN50_WERT|48|1|s|1|1|0|
+STAT_KUPPLUNGSADAPTIONSKENNLINIE_K1_50_BEI_MAX300_WERT|49|1|s|1|1|0|
+STAT_KUPPLUNGSADAPTIONSKENNLINIE_K1_50_BEI_MIN300_WERT|50|1|s|1|1|0|
+STAT_KUPPLUNGSADAPTIONSKENNLINIE_K2_300_BEI_MAX50_WERT|51|1|s|1|1|0|
+STAT_KUPPLUNGSADAPTIONSKENNLINIE_K2_300_BEI_MIN50_WERT|52|1|s|1|1|0|
+STAT_KUPPLUNGSADAPTIONSKENNLINIE_K2_50_BEI_MAX300_WERT|53|1|s|1|1|0|
+STAT_KUPPLUNGSADAPTIONSKENNLINIE_K2_50_BEI_MIN300_WERT|54|1|s|1|1|0|
+STAT_ANZ_ZAEHLER_K1_ADAPTIONEN_50NM_WERT|55|2|u|1|1|0|
+STAT_ANZ_ZAEHLER_K1_ADAPTIONEN_75NM_WERT|57|2|u|1|1|0|
+STAT_ANZ_ZAEHLER_K1_ADAPTIONEN_125NM_WERT|59|2|u|1|1|0|
+STAT_ANZ_ZAEHLER_K1_ADAPTIONEN_200NM_WERT|61|2|u|1|1|0|
+STAT_ANZ_ZAEHLER_K1_ADAPTIONEN_300NM_WERT|63|2|u|1|1|0|
+STAT_ANZ_ZAEHLER_K2_ADAPTIONEN_50NM_WERT|65|2|u|1|1|0|
+STAT_ANZ_ZAEHLER_K2_ADAPTIONEN_75NM_WERT|67|2|u|1|1|0|
+STAT_ANZ_ZAEHLER_K2_ADAPTIONEN_125NM_WERT|69|2|u|1|1|0|
+STAT_ANZ_ZAEHLER_K2_ADAPTIONEN_200NM_WERT|71|2|u|1|1|0|
+STAT_ANZ_ZAEHLER_K2_ADAPTIONEN_300NM_WERT|73|2|u|1|1|0|
+''',
+}
+
+# Baseline measured on the S63TU vehicle, November 13, 2026; the simulator
+# reproduces these counters instead of fabricating lifetime statistics.
+# Live fields may be animated independently. These are demonstration values,
+# NOT diagnostic information about the emulator user's own vehicle.
+_DKG_10_CAPTURE_SEEDS = {
+    'DE30': ('0C3F00000000000000000000000000000000000000400033001E00150003730B3A6D27D227E527E2010800BD0000000104CA02BC010800BE0000000004CB02BCFFFF0006000000000000000000000000001E0012FCBAFC980000000000FFE2FFFC0003E31401F4000101010101000101020208020080000001010001010201000C3F'),
+    'DE50': ('01000000000000000000010280000214B200027917000253C10002002000018BE2000097E200002F2100006600000C0000040900000000000000000000000400000045000002DE00000E890000298F000054050000A2E90000E62F0000B05E000035ED0000010000000000000000000000000000000000000000000000000000000000DC0F0000007D00000001008000000000007D0000000000000AA6000029300017AD2400000000000000000000000000774E400008EFFF00047FAC0000000000000000'),
+    'DE51': ('16204F1683249B00031C0000031C0000B400B9000000000000000000C800C600001C78000036F8775572646F546D6465706B74646D556CFFFFFFFFFFFFB39D0846AA8FFFFF895A1C78021D'),
+}
+
+
+def _dkg_10_preset():
+    """Build every DKG field using PRG-defined affine scaling, big-endian bytes.
+
+    Algorithms: sequential fixed-offset record packing and raw-to-physical
+    scaling (physical = raw * MUL / DIV + ADD). ``encode_value`` performs
+    the inverse on simulated values. The supplied capture seeds the defaults.
+    """
+    dids = {
+        'F150': {'name': 'DKG_10 identification (captured)', 'hex': '0F1870'},
+    }
+    for did, layout in _DKG_10_LAYOUTS.items():
+        seed = bytes.fromhex(_DKG_10_CAPTURE_SEEDS[did])
+        fields = []
+        for line in layout.strip().splitlines():
+            name, pos, width, sign, mul, div, add, unit = line.split('|')
+            pos, width = int(pos), int(width)
+            mul, div, add = float(mul), float(div), float(add)
+            assert div and mul, (did, name)
+            raw = int.from_bytes(seed[pos:pos + width], 'big', signed=(sign == 's'))
+            physical = raw * mul / div + add
+            entry = _v(name, unit, width, mul / div, physical, offset=add,
+                       signed=(sign == 's'), pos=pos)
+            # Animate only rapidly-changing live channels; preserve the captured
+            # historical statistics exactly unless the user edits uds.json.
+            if did == 'DE30' and name == 'STAT_KUPPLUNGSOELTEMPERATUR_WERT':
+                entry['wave'] = {'min': physical, 'max': physical + 35, 'period': 90}
+            elif did == 'DE30' and name == 'STAT_MOTORDREHZAHL_WERT':
+                entry['wave'] = {'min': physical, 'max': 2200, 'period': 8}
+            fields.append(entry)
+        dids[did] = {'name': 'DKG_10 %s (%d PRG fields)' % (did, len(fields)),
+                     'length': len(seed), 'fill': 0, 'fields': fields}
+    return {'name': 'DKG / EGS', 'dids': dids}
+
+
+def _obd_s63tu(bank):
+    """SAE J1979 OBD mode 01 signals; bank selects diagnostic ECU 12/13.
+
+    01 06/07 are Bank 1 trim PIDs *within that DME*, so BoostDeck STFT 2
+    requests 01 06 from ECU 0x13, not Bank-2 PID 01 08 from ECU 0x12.
+    """
+    second = bank == 2
+    return {
+        '04': _v('Calculated engine load', '%', 1, 100 / 255.0,
+                 wave=(8.24 if second else 8.63, 48 if second else 45, 8)),
+        '05': _v('Coolant temperature', 'C', 1, 1, 64, offset=-40),
+        '06': _v('STFT on DME%d (OBD Bank 1)' % bank, '%', 1, 100 / 128.0,
+                 wave=(3.125 if second else 1.5625, 9.375, 5), offset=-100),
+        '07': _v('LTFT on DME%d (OBD Bank 1)' % bank, '%', 1, 100 / 128.0,
+                 3.125, offset=-100),
+        '0C': _v('Engine speed', 'rpm', 2, 0.25, wave=(780, 2200, 8)),
+        '0D': _v('Vehicle speed', 'km/h', 1, 1, 0),
+        '10': _v('Mass air flow', 'g/s', 2, 0.01, wave=(3.19 if second else 3.30, 12, 8)),
+    }
+
+
+def _add_s63tu_extended_presets():
+    dme1 = PRESETS['s63tu']['ecus']['12']
+    dme1['name'] = 'DME1'
+    dme1['obd'] = _obd_s63tu(1)
+    # Keep the grouped and standardized MAF/coolant/RPM simulations consistent.
+    # The actual grouped 4000 PRG field definitions remain unchanged.
+    for f in dme1['dids']['4000']['fields']:
+        if f['name'].startswith('STAT_MAF_KGH_MES_BAS'):
+            f['wave'] = {'min': 11.8, 'max': 43.2, 'period': 12}
+        elif f['name'].startswith('STAT_TPS_AV_1'):
+            f['wave'] = {'min': 2.42, 'max': 38, 'period': 8}
+        elif f['name'].startswith('STAT_NMOT_W_MW'):
+            f['wave'] = {'min': 780, 'max': 2200, 'period': 8}
+        elif f['name'].startswith('STAT_TMOT (coolant)'):
+            f['value'] = 64
+    # 22 43 00 was captured as a ONE-byte temperature, not the older B58
+    # two-byte value. The PRG scaling is byte * 0.75 - 48 degrees C.
+    dme1['dids']['4300'] = _v('S63TU coolant temperature', 'C', 1, 0.75, 64, offset=-48)
+    # Additional captured PRG adaptation DIDs: preserve their exact bytes;
+    # no undocumented signal offsets are asserted here.
+    dme1['dids']['400A'] = {'name': 'S63TU mixture adaptation (captured)',
+                             'hex': 'FFFFFFFf850EFFFF274BFFFFFFFF'}
+    dme1['dids']['4046'] = {'name': 'S63TU lambda adaptation (captured)',
+                             'hex': '867EFFEB7E3B8B0F800682D07D968F7A7F718EB5761B819580027F1A7E327F1D8000800081D40000'}
+    # Actual DME1 returned 41 23 02 93 in the supplied full capture.
+    dme1['obd']['23'] = _v('Fuel rail pressure (gauge)', 'bar', 2, 0.1,
+                            wave=(65.9, 140, 9))
+    # 01 5C was advertised in the live 01 40 bitmap but no response was
+    # recorded: emulate the STANDARD conversion, not a confirmed live value.
+    dme1['obd']['5C'] = _v('Engine oil temperature', 'C', 1, 1,
+                            wave=(72, 98, 75), offset=-40)
+    # The second S63TU DME responds to 22 40 00 / 42 01 / 42 05 / 58 89
+    # in the supplied dual-DME log; do not map it to hypothetical Bank-2 PIDs.
+    dme2_dids = copy.deepcopy(dme1['dids'])
+    dme2_dids['4000']['name'] = 'STATUS_MESSWERTE DME2'
+    for f in dme2_dids['4000']['fields']:
+        if f['name'].startswith('STAT_MAF_KGH_MES_BAS'):
+            f['wave'] = {'min': 11.5, 'max': 42, 'period': 12}
+    dme2_dids['400A'] = {'name': 'S63TU mixture adaptation DME2 (captured)',
+                          'hex': 'FFFFFFFF8546FFFF2909FFFFFFFF'}
+    dme2_dids['4046'] = {'name': 'S63TU lambda adaptation DME2 (captured)',
+                          'hex': '86CCFFE17CC18CFA800580367CD983DC7FA283C173897FFC80017D857B4F7DAC7FFF80007F790000'}
+    PRESETS['s63tu']['ecus']['13'] = {'name': 'DME2', 'dids': dme2_dids,
+                                     'obd': _obd_s63tu(2)}
+    PRESETS['dkg_10'] = {
+        'label': 'DKG_10 / Getrag LES4 (transmission live + statistics)',
+        'note': 'DKG_10 PRG verified DIDs 22 DE30, 22 DE50 and 22 DE51. '
+                'Static lifetime counters seeded from November 13 capture.',
+        'ecus': {'18': _dkg_10_preset()},
+    }
+    PRESETS['s63tu']['ecus']['18'] = copy.deepcopy(PRESETS['dkg_10']['ecus']['18'])
+    PRESETS['s63tu']['label'] = 'S63TU BoostDeck (DME1 + DME2 + DKG_10)'
+    PRESETS['s63tu']['note'] += (' Includes OBD 01 04/06/07/0C/10 from both DMEs, '
+                                 'DME1 01 23/5C, and PRG-derived DKG DE30/50/51.')
+
+
+_add_s63tu_extended_presets()
+
 SERVICES = {0x10: 'DiagnosticSessionControl', 0x11: 'ECUReset', 0x14: 'ClearDTC', 0x19: 'ReadDTC', 0x22: 'ReadDataByIdentifier',
             0x27: 'SecurityAccess', 0x2F: 'IOControl', 0x31: 'RoutineControl', 0x3E: 'TesterPresent', 0x01: 'OBD mode 01',
             0x09: 'OBD mode 09'}
@@ -127,6 +462,28 @@ def merge_preset(cfg, name):
             if ecu.get(kind): dst.setdefault(kind, {}).update(copy.deepcopy(ecu[kind]))
         if ecu.get('raw'): dst.setdefault('raw', []).extend(copy.deepcopy(ecu['raw']))
     return cfg
+
+
+def upgrade_legacy_s63tu_4000(v):
+    """Upgrade only the known old 36-byte STATUS_MESSWERTE layout, preserving user values.
+
+    The prior emulator omitted the six reserved FF bytes: four at the beginning
+    and two between lambda regulator and vehicle speed. Only the exact legacy
+    offset pattern is migrated, so unrelated/custom DID definitions are intact.
+    """
+    old_positions = (0, 4, 6, 8, 10, 12, 14, 15, 16, 18, 20, 22, 24, 25, 27, 28, 30, 32, 34)
+    if (v.get('name') != 'STATUS_MESSWERTE' or v.get('length') != 36 or
+        len(v.get('fields') or []) != len(old_positions) or
+        tuple(f.get('pos') for f in v['fields']) != old_positions):
+        return v
+    updated = copy.deepcopy(v)
+    updated['length'] = 40
+    updated['fill'] = 0xFF
+    for f in updated['fields']:
+        f['pos'] += 4
+        if f.get('name') == 'STAT_LR1_MW (lambda bank 1)':
+            f['name'] = 'STAT_LR1_MW (lambda regulator 1)'
+    return updated
 
 
 # ---------------------------------------------------------------------------------------------------------- encoding
@@ -167,7 +524,10 @@ def encode_field(v, t):
 def encode_value(v, t):
     if 'fields' in v:
         size = int(v.get('length') or max(int(f.get('pos', 0)) + int(f.get('bytes', 1)) for f in v['fields']))
-        buf = bytearray(size)
+        fill = int(v.get('fill', 0))
+        if not 0 <= fill <= 255:
+            raise ValueError('record fill must be a byte (0..255)')
+        buf = bytearray([fill]) * size
         for f in v['fields']:
             b = encode_field(f, t); p = int(f.get('pos', 0))
             buf[p:p + len(b)] = b
@@ -286,9 +646,12 @@ class UdsEmulator(object):
             for pid in req[1:7]:
                 if pid in (0x00, 0x20, 0x40, 0x60):             # supported-PID bitmaps
                     bits = 0
-                    for k in (ecu.get('obd') or {}):
-                        p = int(k, 16)
+                    known_pids = [int(k, 16) for k in (ecu.get('obd') or {})]
+                    for p in known_pids:
                         if pid < p <= pid + 0x20: bits |= 1 << (32 - (p - pid))
+                    # The final bit advertises another bitmap page. A PID in
+                    # 0x41..0x60 requires 01 00 -> 01 20 -> 01 40 discovery.
+                    if any(p > pid + 0x20 for p in known_pids): bits |= 1
                     out += bytes([pid]) + bits.to_bytes(4, 'big'); continue
                 v = (ecu.get('obd') or {}).get('%02X' % pid)
                 if v is None: continue
@@ -383,6 +746,8 @@ def validate(cfg):
                     raise ValueError('ECU %s: %s key %r is not hex' % (a, kind, k))
                 if len(kk) != width: raise ValueError('ECU %s: %s key %r is too long' % (a, kind, k))
                 if not isinstance(v, dict): raise ValueError('ECU %s %s %s: value must be an object' % (a, kind, kk))
+                if kind == 'dids' and kk == '4000':
+                    v = upgrade_legacy_s63tu_4000(v)
                 try:
                     encode_value(v, 0.0)
                 except Exception as ex:
@@ -436,3 +801,41 @@ def gateway_ips(env_dir, overlay_files=()):
             continue
         if ip not in ips: ips.append(ip)
     return ips
+
+
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description='UDS emulator preset configuration helper')
+    parser.add_argument('--merge-preset', choices=list(PRESETS),
+                        help='Add/update the named preset in a uds.json file')
+    parser.add_argument('--config', help='Path to existing uds.json')
+    parser.add_argument('--output', help='Output file; defaults to --config')
+    parser.add_argument('--only-missing', action='store_true',
+                        help='Keep existing DID/PID definitions instead of updating them')
+    args = parser.parse_args()
+    if not args.merge_preset or not args.config:
+        parser.error('specify --merge-preset and --config')
+    try:
+        with open(args.config, encoding='utf-8') as f:
+            data = validate(json.load(f))
+    except FileNotFoundError:
+        data = default_config()
+    except (ValueError, OSError) as exc:
+        parser.error('unable to read configuration: %s' % exc)
+    if args.only_missing:
+        preset = PRESETS[args.merge_preset]
+        for addr, ecu in preset['ecus'].items():
+            dst = data.setdefault('ecus', {}).setdefault(addr, {'name': ecu.get('name','')})
+            if not dst.get('name'): dst['name'] = ecu.get('name', '')
+            for kind in ('dids', 'obd'):
+                for key, v in ecu.get(kind, {}).items():
+                    dst.setdefault(kind, {}).setdefault(key, copy.deepcopy(v))
+    else:
+        merge_preset(data, args.merge_preset)
+    dst = args.output or args.config
+    # Avoid silently destroying a prior working simulator configuration.
+    if os.path.isfile(dst):
+        import shutil
+        shutil.copy2(dst, dst + '.bak')
+    save_config(dst, validate(data))
+    print('Merged %s into %s' % (args.merge_preset, dst))

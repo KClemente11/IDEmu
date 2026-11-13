@@ -201,9 +201,11 @@ def build(env, env_dir, log=print, progress=lambda pct, step: None):
     if not os.path.isdir(ro_src):
         raise BuildError('dados do HMI (data/ro) não estão no pacote "hmi"')
     keep_ego = chassis + '.zip'
+    want_m = m_brand(env)       # bmwm/ (~130 MB) only goes in when the coding asks for the M brand
+    if want_m: log('marca BMW M (HMI_BRAND=bmw_m): incluindo os dados bmwm/ do pacote "hmi"')
     def skip_hmi(p):
         rel = os.path.relpath(p, ro_src)
-        if rel == 'bmwm': return True
+        if rel == 'bmwm': return not want_m
         if '/ego_model/' in '/' + rel.replace(os.sep, '/') + '/' and os.path.isfile(p) and os.path.basename(p) != keep_ego:
             return True
         return False
@@ -214,11 +216,25 @@ def build(env, env_dir, log=print, progress=lambda pct, step: None):
             bp = os.path.join(brand_ro, b)
             if not os.path.isdir(bp): continue
             n = ro.kids.get(b.encode()) or mkq6.N(b.encode(), 0o40775); ro.kids[b.encode()] = n
-            mkq6.from_host(n, bp, lambda p, bp=bp: False)     # inclui id5/ (10 MB): é o que HMI_ID_VERSION=id5 usa
+            if want_m:
+                # BMW M builds need room for bmwm/ (~130 MB): keep only this chassis' 3D vehicle (the HMI loads no other; ~6 MB each, ~30 chassis)
+                veh = os.path.join(bp, 'widgetasset', 'vehicles'); trimmed = [0]
+                def skip_brand(p, veh=veh):
+                    if os.path.dirname(p) == veh and os.path.isdir(p) and os.path.basename(p) != chassis:
+                        trimmed[0] += 1; return True
+                    return False
+                mkq6.from_host(n, bp, skip_brand)
+                if trimmed[0]: log('marca BMW M: %d modelos 3D de outros chassis omitidos de %s/widgetasset/vehicles' % (trimmed[0], b))
+            else:
+                mkq6.from_host(n, bp, lambda p, bp=bp: False)     # inclui id5/ (10 MB): é o que HMI_ID_VERSION=id5 usa
     tpl = os.path.join(work, 'q6_template.img')
     open(tpl, 'wb').write(zlib.decompress(open(os.path.join(HERE, 'qnxfs', 'q6_template.img.z'), 'rb').read()))
     ovb = overlay.apply_sdb(ro, env_dir, mkq6, log); ov['sdb'] = ovb['sdb']; ov['deleted'] += ovb['deleted']
-    mkq6.build(root, tpl, os.path.join(img_dir, 'sdb.img'))
+    try:
+        mkq6.build(root, tpl, os.path.join(img_dir, 'sdb.img'))
+    except SystemExit as e:      # mkq6 stops with SystemExit('disk too small: ...' / 'too many inodes')
+        if want_m: raise BuildError('os dados BMW M (bmwm/, ~130 MB) não cabem no disco de dados do HMI (sdb): %s' % e)
+        raise BuildError('o disco de dados do HMI (sdb) não comporta o conteúdo: %s' % e)
     os.unlink(tpl)
     progress(80, 'Disco de dados pronto')
     # 5) shim.img
@@ -239,6 +255,16 @@ def build(env, env_dir, log=print, progress=lambda pct, step: None):
     shutil.rmtree(work, ignore_errors=True)
     progress(100, 'Pronto')
     return manifest
+
+WATCH_FILES = ('/dev/shmem/navbridge-state.txt', '/var/opt/hmi/data/ID5/Plugins/NavBridge/last-run.log', '/dev/shmem/nbt-hud-guide.status',
+               '/var/idemu/navbridge-inject.log')
+
+
+def m_brand(env):
+    """True when the coding makes the HMI load the BMW M brand data (/opt/hmi/data/ro/bmwm, in the HMI SWFL): HMI_BRAND = bmw_m (value 4).
+    Without that folder the HMI loops on "Brand Data is not on disk" and never comes up."""
+    v = (env.get('coding', {}).get('extra') or {}).get('HMI_BRAND', env.get('brand', 'bmw'))
+    return str(v).strip().lower() in ('4', 'bmw_m', 'va_hmi_brand_bmw_m')
 
 def uds_gateway_on(env):
     """Emulated diagnostic gateway (HSFZ 6801, idemu/uds.py + src/shim/hsfz.c): on by default except on macOS, where it is opt-in."""
@@ -337,6 +363,9 @@ def build_shim(env, os_istep, out, log=print, env_dir=None):
         from . import uds
         gw = uds.gateway_ips(env_dir, overlay.files(env_dir, 'sda'))
         cfgb = ('\n'.join(gw) + '\n').encode(); t.add('/hsfz.cfg', 0o100644, cfgb, len(cfgb))
+        # guest files the shim sends to the host when they change (plugin output shown in the Cluster and HUD tab); env.json "watch_files" adds more
+        wf = list(WATCH_FILES) + [p for p in (env.get('watch_files') or []) if isinstance(p, str) and p.startswith('/') and ' ' not in p]
+        wb = ('\n'.join(wf[:8]) + '\n').encode(); t.add('/watch.cfg', 0o100644, wb, len(wb))
         # the gateway addresses live on the loopback: a tool on the head unit that opens 169.254.x.x:6801 reaches the shim's listener
         i = next((k for k, l in enumerate(rc) if 'start_net.done' in l), len(rc) - 1) + 1
         rc[i:i] = ['ifconfig lo0 inet %s netmask 255.255.255.255 alias >> /var/hsfz.log 2>&1' % ip for ip in gw]

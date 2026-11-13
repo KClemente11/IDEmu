@@ -8,6 +8,15 @@ static struct { u32 vs,fs; } progbin[MAXSH];
 static struct { u32 h; char *n; } *shidx; static int nshidx;
 static void load_index(void){ FILE*f=fopen(getenv("GLHOST_SHIDX")?getenv("GLHOST_SHIDX"):"../shd/index.txt","r"); if(!f) return; char l[512]; shidx=calloc(8192,sizeof *shidx); while(fgets(l,512,f)&&nshidx<8192){ u32 h; char nm[480]; if(sscanf(l,"%x %479s",&h,nm)==2){ shidx[nshidx].h=h; shidx[nshidx].n=strdup(nm); nshidx++; } } fclose(f); fprintf(stderr,"[host] shader index: %d\n",nshidx); }
 static const char *shname(u32 h){ for(int i=0;i<nshidx;i++) if(shidx[i].h==h) return shidx[i].n; return "?"; }
+static int brand_m(void){ static int m=-1; if(m<0){ const char*b=getenv("GLHOST_BRAND"); m=b&&!strcmp(b,"bmw_m"); } return m; }   /* runtime sets GLHOST_BRAND=bmw_m for environments coded HMI_BRAND=bmw_m */
+/* BMW M background (bmwm/id6l/widgetasset/background): its masks pack two profiles per texture, one per colour channel (sky1: R centred glow, G left wedge; glow: G/B;
+   line: G/B; hl: R). The max-of-channels rule used for BMW draws both at once, which on M gives a tall blue band. Per-layer channel and the dim factor can be
+   overridden without rebuilding: GLHOST_BGMASK="sky=r,glow=g,hl=r,line=g,subline=g" (r, g, b or m = max) and GLHOST_BGDIM (default 0.25), set from env.json. */
+static const char *bg_layer(const char*nm){ static const char*L[]={"mat_subline","mat_sky","mat_glow","mat_hl","mat_line",0}; if(!strstr(nm,"/widgetasset/background/shaders/")) return 0;
+  for(int i=0;L[i];i++) if(strstr(nm,L[i])) return L[i]+4; return 0; }
+static char bg_ch(const char*layer){ char c=!strcmp(layer,"sky")||!strcmp(layer,"hl")?'r':'g'; const char*e=getenv("GLHOST_BGMASK"); if(e){ size_t n=strlen(layer); const char*q=e;
+  while((q=strstr(q,layer))){ if((q==e||q[-1]==',')&&q[n]=='='&&strchr("rgbm",q[n+1])&&q[n+1]){ c=q[n+1]; break; } q+=n; } } return c; }
+static double bg_dim(void){ const char*e=getenv("GLHOST_BGDIM"); double d=e?atof(e):0.25; return d>0&&d<=4?d:0.25; }
 static u32 fnv1a(const unsigned char*b,u32 n){ u32 h=0x811c9dc5; for(u32 i=0;i<n;i++) h=(h^b[i])*0x01000193; return h; }
 static int parse_syms(const unsigned char*b,int len,ShInfo*o){
   o->kind=(b[0x20]<<24|b[0x21]<<16|b[0x22]<<8|b[0x23]); o->n=0;
@@ -72,6 +81,13 @@ static char *gen_vs(ShInfo*v,ShInfo*f){ char *o=malloc(32768),*p=o; p+=sprintf(p
       case 4: { const char *vm=v->hash?shname(v->hash):"";
         /* iDrive 6 list cursor frame: mixed_co is built from constants inside the SGX binary (material mat_frame1SG: CO1 (1,0.588,0) -> CO2 (1,0.282,0)). The HMI switches to the mat_frame_touch program once the cursor moves, so it gets the same colour.
            Without it the frame came out pure white. a_TextureCoordinate1.x is the 9-slice stretch weight: 0 on the left edge, 1 on the right. */
+        /* BMW M theme (bmwm/, HMI_BRAND=bmw_m): its own cursor programs (mat_frame_M_GmbH, mat_frame_touch_MGmbH) are unique binaries, so their index names start with /bmwm/.
+           Colours from bmwm/id6l/widgetasset/cursor/Cursor/scene.pbx: mat_frame1SG CO1 = CO2 = (0.7922,0.0627,0.0627); mat_frame_touch CO_BTM (0.5098,0.0549,0.0549) -> CO_TOP (0.3294,0,0). */
+        if(!strcmp(s->name,"mixed_co")&&strstr(vm,"/bmwm/")&&strstr(vm,"/cursor/Cursor/shaders/mat_frame")&&!strstr(vm,"mat_frame_inner")&&!strstr(vm,"seeall")){
+          if(!strstr(vm,"mat_frame_touch")) p+=sprintf(p," %s=vec3(0.7922,0.0627,0.0627);\n",n);
+          else if(fnd(v,"a_TextureCoordinate1",4)) p+=sprintf(p," %s=mix(vec3(0.5098,0.0549,0.0549),vec3(0.3294,0.0,0.0),a_TextureCoordinate1.y);\n",n);
+          else p+=sprintf(p," %s=vec3(0.42,0.027,0.027);\n",n);
+          break; }
         if(!strcmp(s->name,"mixed_co")&&strstr(vm,"/cursor/Cursor/shaders/mat_frame")&&!strstr(vm,"mat_frame_inner")&&!strstr(vm,"seeall")){ if(fnd(v,"a_TextureCoordinate1",4)) p+=sprintf(p," %s=mix(vec3(1.0,0.588,0.0),vec3(1.0,0.282,0.0),a_TextureCoordinate1.x);\n",n); else p+=sprintf(p," %s=vec3(1.0,0.435,0.0);\n",n); break; }
         if(fnd(v,"a_Normal",4)&&(strstr(s->name,"ormal"))) p+=sprintf(p," %s=a_Normal;\n",n); else { const char*c1=0,*c2=0; for(int z=0;z<v->n;z++){ Sym*t=&v->s[z]; if(t->cls==3&&t->type==4&&!strncmp(t->name,"CO",2)){ if(!c1) c1=t->name; else if(!c2) c2=t->name; } }
           if(c1&&c2&&fnd(v,"a_Color",4)) p+=sprintf(p," %s=mix(%s,%s,a_Color.r);\n",n,gname(c1),gname(c2)); else if(c1) p+=sprintf(p," %s=%s;\n",n,gname(c1)); else p+=sprintf(p," %s=vec3(1.0);\n",n); } break; }
@@ -99,7 +115,9 @@ static char *gen_fs(ShInfo*f){ char *o=malloc(32768),*p=o; p+=sprintf(p,"#versio
   /* text: glyph alpha only */
   if(tex&&fnd(f,"vColor",6)&&(fnd(f,"fFading",6)||fnd(f,"u_opacity",3))) { p+=sprintf(p," col=vec4(vColor.rgb,vColor.a*col.a*max(col.r,max(col.g,col.b)));\n"); if(fnd(f,"u_opacity",3)) p+=sprintf(p," col.a*=u_opacity;\n"); if(fnd(f,"fFading",6)) p+=sprintf(p," col.a*=fFading;\n"); p+=sprintf(p," gl_FragColor=col;\n}\n"); return o; }
   { int hascolor=0; for(int i=0;i<f->n;i++){ Sym*s=&f->s[i]; const char*n=s->name; if(!s->flag&&s->type==4&&(s->cls==6||s->cls==3)&&((!strncmp(n,"CO",2)&&!strstr(n,"TOUCH"))||ieq(n,"mixed_co")||ieq(n,"diffColor")||ieq(n,"base_co")||ieq(n,"cm")||ieq(n,"BLUE")||ieq(n,"col")||ieq(n,"c"))) hascolor=1; }
-    if(hascolor&&tex&&uv) p+=sprintf(p," col.a=col.a*max(col.r,max(col.g,col.b));\n");
+    const char *bgl=brand_m()&&f->hash?bg_layer(shname(f->hash)):0; char bgc=bgl?bg_ch(bgl):'m';
+    if(hascolor&&tex&&uv&&bgc!='m') p+=sprintf(p," col.a=col.a*col.%c;\n",bgc);
+    else if(hascolor&&tex&&uv) p+=sprintf(p," col.a=col.a*max(col.r,max(col.g,col.b));\n");
     /* panel shadows (mat_list_shadow, ...): opaque RGB-packed masks with no colour uniform; drawn raw they show up as a green band under every list */
     else if(tex&&uv&&(fnd(f,"late_stack",3)||fnd(f,"is_stack",3))&&!fnd(f,"vColor",6)) p+=sprintf(p," col=vec4(0.0,0.0,0.0,col.a*max(col.r,max(col.g,col.b)));\n"); }
   for(int i=0;i<f->n;i++){ Sym*s=&f->s[i]; if(s->flag||s->arr>1) continue; const char*n=s->name;
@@ -114,7 +132,12 @@ static char *gen_fs(ShInfo*f){ char *o=malloc(32768),*p=o; p+=sprintf(p,"#versio
     if(strstr(nm,"/CursorBG/")&&strstr(nm,"mat_shadow")) p+=sprintf(p," col.a*=0.25;\n");
     if(strstr(nm,"/CursorBG/")&&strstr(nm,"mat_bg")) p+=sprintf(p," col.a*=0.45;\n");
     if(strstr(nm,"/cursor/")&&strstr(nm,"mat_list_pressed")) p+=sprintf(p," col.a*=0.0;\n");
-    if(strstr(nm,"/cursor/")&&strstr(nm,"mat_highlight")) p+=sprintf(p," col.a*=0.25;\n"); }
+    if(strstr(nm,"/cursor/")&&strstr(nm,"mat_highlight")) p+=sprintf(p," col.a*=0.25;\n");
+    /* BMW M theme: the sky/highlight/glow/line layers of the home background are the same binaries as BMW's, but M feeds them light blue-grey colours (CO 0.59,0.71,0.75 in
+       bmwm/id6l/widgetasset/background/scene.pbx) that the original code keeps faint. Measured against a real M unit: ~0.25 of what this generator outputs. The floor already matches. */
+    if(brand_m()&&strstr(nm,"/widgetasset/background/shaders/")&&!strstr(nm,"mat_floor")) p+=sprintf(p," col.rgb*=%.3f;\n",bg_dim());
+    /* M home tiles (mat_pad_bg_M_GmbH): the original also darkens base_co with the tex_pad_bg1 mask, whose coordinates the symbol table does not expose; real unit ~0.65 of base_co */
+    if(strstr(nm,"/bmwm/")&&strstr(nm,"/pad/shaders/mat_pad_bg")) p+=sprintf(p," col.rgb*=0.65;\n"); }
   p+=sprintf(p," gl_FragColor=col;\n}\n"); return o; }
 static GLuint comp(GLenum t,const char*src,const char*what){ GLuint s=glCreateShader(t); glShaderSource(s,1,&src,NULL); glCompileShader(s); GLint ok=0; glGetShaderiv(s,GL_COMPILE_STATUS,&ok);
   if(!ok){ char lg[2048]; glGetShaderInfoLog(s,2048,NULL,lg); fprintf(stderr,"[host] GEN %s FAILED: %s\n--- src\n%s---\n",what,lg,src); } return s; }

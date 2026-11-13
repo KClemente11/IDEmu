@@ -391,6 +391,9 @@ class MostCar(object):
         except Exception:
             return default
 
+    def _pct(self, name):
+        """Sinal em % como u8 0..100 (o HMI trata > 100 como inválido)."""
+        return max(0, min(100, int(round(self._sig(name)))))
 
     LATLON_LSB = 180.0 / 2 ** 31        # s32 em 180/2^31 graus (confirmado: HmiMain3D 0x165c288 divide por 2^31/180 para obter graus)
 
@@ -509,6 +512,14 @@ class MostCar(object):
             if fkt == 0xc01:                       # CTyresStatus: u8 | u8<=15 | u8 | u8 | u8. CDevCarTpmStatusImpl so considera o RDC ativo se o 3o byte (b2) & 0xfc for um dos codigos
                                                    # 0x20/0x60/0x80/0xa0/0xa8/0xb0/0xb8/0xe0/0xe8 e o 4o (b3) != 0xff (senao o painel mostra "Controle da pressao dos pneus inoperante").
                 return bytes((0, 0, 0xa0, 0, 0))   # semantica de 0xa0 por hipotese (RDC ativo); o temporizador de 'sem dados' do TPM e neutralizado no guest (src/shim/hook.c)
+            if fkt == 0xc7b:                       # CVehicleDynamicEngine (exibição esportiva): u8 torque % | u8 potência %. Deserializador em HmiMain3D 0x2463518;
+                                                   # CDevCarInstrumentsOfSport só aceita 0..100 (> 100 = inválido, a barra não anda). A tela usa valor * 0,01.
+                return bytes((self._pct('engine_torque_pct'), self._pct('engine_power_pct')))
+            if fkt == 0xc7a:                       # CVehicleDynamicEngineScaling: u8 código torque | u8 código potência (<= 15) | u8 | u8 | u16 | u16 (deserializador 0x24839a0).
+                                                   # Código -> fundo de escala: 0..11 = (n+1)*80; torque 12/13/14 = 40/120/200; potência 12/13 = 120/200 (CDevCarInstrumentsOfSport 0xf508a0).
+                tq = max(0, min(15, int(self._sig('sport_torque_scale', 9))))
+                pw = max(0, min(15, int(self._sig('sport_power_scale', 5))))
+                return _st.pack('>BBBBHH', tq, pw, 0, 0, 0, 0)
             if fkt == 0xc02:                       # CTyrePressure: 4 x u16 (FL, FR, RL, RR) em kPa (hipótese)
                 v = [max(0, min(0xFFFF, int(round(self._sig(n) * 100)))) for n in
                      ('tire_pressure_fl', 'tire_pressure_fr', 'tire_pressure_rl', 'tire_pressure_rr')]

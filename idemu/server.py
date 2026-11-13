@@ -679,7 +679,7 @@ class H(BaseHTTPRequestHandler):
             rt = A.need_rt()
             if getattr(rt, 'kind', None) or not getattr(rt, 'can', None): raise ApiError('o cluster e o HUD só existem no iDrive 5 e 6 em execução', 409)
             v = getattr(rt, 'v850', None)
-            return cluster.snapshot(rt.can, getattr(rt, 'gps', None), v.bridge if v else None)
+            return cluster.snapshot(rt.can, getattr(rt, 'gps', None), v.bridge if v else None, files=getattr(rt, 'guest_files', None))
         if path == 'v850/seen':                          # depuração: últimas mensagens Set/Get do HMI por (FBlock, instância, função)
             rt = A.need_rt(); v = getattr(rt, 'v850', None)
             if not v: raise ApiError('V850 virtual indisponível', 409)
@@ -756,6 +756,13 @@ class H(BaseHTTPRequestHandler):
             return ph.state()
         if P[0] == 'can': return self.api_can(m, path, q, d)
         if P[0] == 'uds': return self.api_uds(m, path, q, d)
+        if path == 'plugins/navbridge' and m == 'POST':     # NavBridge virtual feed: runs its injector in the guest (agent.sh 'N')
+            rt = A.need_rt(); cmd = str(d.get('cmd', '')).strip()
+            if not re.match(r'^(CLEAR|PING|STOP|SHOW\|(STRAIGHT|LEFT|RIGHT|UTURN)\|[0-9]+(\.[0-9]+)?\|(m|km|mi|ft|yd)\|[A-Za-z0-9 ./-]{1,32})$', cmd) or len(cmd) > 80:
+                raise ApiError('invalid NavBridge command')
+            ch = getattr(rt, 'data', None)
+            if not ch or not ch.guest_line('N ' + cmd): raise ApiError('guest link not connected: turn the diagnostic gateway on (CAN > UDS) and rebuild', 409)
+            return {'ok': True}
         if P[0] == 'gps': return self.api_gps(m, path, q, d)
         if path == 'ssh/info':
             rt = A.need_rt()

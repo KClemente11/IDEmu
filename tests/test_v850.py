@@ -294,6 +294,19 @@ class V850Tests(unittest.TestCase):
         self.assertEqual(car.status_for(0xD1, 2, 0xc10), bytes(4))
         FakeCan.vals['key_present'] = 1
 
+    def test_car_feed_sport_displays(self):
+        """Vehicle 0xC7B/0xC7A (exibição esportiva): torque/potência em % (<= 100) e códigos de fundo de escala."""
+        class FakeCan(object):
+            vals = {'engine_torque_pct': 73.4, 'engine_power_pct': 150, 'sport_torque_scale': 9, 'sport_power_scale': 5}
+            def get_signal(self, n): return self.vals.get(n)
+        car = self.link.bridge.car
+        car.can = FakeCan()
+        self.assertEqual(car.status_for(0x05, 0, 0xc7b), bytes((73, 100)))       # > 100 seria inválido no HMI: limitado
+        self.assertEqual(car.status_for(0x05, 0, 0xc7a), struct.pack('>BBBBHH', 9, 5, 0, 0, 0, 0))
+        car.can = None                                                           # sem CAN: barras em 0, escalas padrão
+        self.assertEqual(car.status_for(0x05, 0, 0xc7b), bytes((0, 0)))
+        self.assertEqual(car.status_for(0x05, 0, 0xc7a)[:2], bytes((9, 5)))
+
 
 class SnapshotState(unittest.TestCase):
     """O que o boot rápido guarda do V850 virtual: depois de restaurar, o enlace continua sem repetir o registro no `most`."""

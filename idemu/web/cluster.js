@@ -62,7 +62,9 @@
       <text id="hud-speed" x="190" y="170" text-anchor="middle" font-size="140" font-weight="700" fill="#a6ffd0">0</text>
       <text x="190" y="214" text-anchor="middle" font-size="26" fill="#a6ffd0" opacity=".75">km/h</text>
       <g id="hud-arrow" transform="translate(470 126)" style="color:#a6ffd0"></g>
-      <text id="hud-dist" x="470" y="262" text-anchor="middle" font-size="36" font-weight="600" fill="#a6ffd0"></text>
+      <text id="hud-dist" x="470" y="250" text-anchor="middle" font-size="36" font-weight="600" fill="#a6ffd0"></text>
+      <text id="hud-street" x="470" y="284" text-anchor="middle" font-size="22" fill="#a6ffd0" opacity=".85"></text>
+      <text id="hud-src" x="470" y="34" text-anchor="middle" font-size="15" fill="#a6ffd0" opacity=".45"></text>
       <text id="hud-gear" x="690" y="130" text-anchor="middle" font-size="84" font-weight="700" fill="#a6ffd0">P</text>
       <polygon id="hud-tl-l" points="640,205 612,225 640,245" fill="#a6ffd0" class="tell"/><polygon id="hud-tl-r" points="740,205 768,225 740,245" fill="#a6ffd0" class="tell"/>
     </g>
@@ -75,6 +77,18 @@
   const PILL_FILL = { red: '#c4281d', amber: '#d89a1c', blue: '#2f7de1', green: '#2aa874', info: '#4a5565' };
   const GEAR = { 0: 'P', 1: 'R', 2: 'N', 3: 'D' };
   const MODE = { 0: 'Comfort', 1: 'Sport', 2: 'Eco Pro', 3: 'Sport+' };
+  /* NavBridge virtual feed: the same maneuver polygons its worker sends to the HUDTerminal (worker.cpp makeArrow, 6WA-sized
+     coordinates, roughly x 65..173, y 20..120), drawn around the HUD arrow anchor. */
+  const NB_ARROWS = {
+    STRAIGHT: [[3, [[110, 120], [130, 120], [130, 65], [151, 65], [120, 20], [89, 65], [110, 65]]]],
+    LEFT: [[3, [[110, 120], [130, 120], [130, 50], [90, 50], [90, 70], [110, 70]]], [3, [[90, 38], [65, 60], [90, 82]]]],
+    RIGHT: [[3, [[110, 120], [130, 120], [130, 70], [150, 70], [150, 50], [110, 50]]], [3, [[148, 38], [173, 60], [148, 82]]]],
+    UTURN: [[2, [[120, 120], [137, 120], [137, 50], [111, 35], [93, 45], [93, 66], [111, 66]]], [3, [[111, 83], [83, 66], [111, 49]]]],
+  };
+  const nbArrow = (turn) => '<g transform="scale(1.05) translate(-120 -70)">' + (NB_ARROWS[turn] || []).map(([type, pts]) => {
+    const d = pts.map((p) => p.join(',')).join(' ');
+    return type === 3 ? '<polygon points="' + d + '" fill="currentColor"/>' : '<polyline points="' + d + '" fill="none" stroke="currentColor" stroke-width="12" stroke-linejoin="round"/>';
+  }).join('') + '</g>';
   const km = (m) => (m >= 1000 ? IDE.fmtNum(m / 1000, m >= 10000 ? 0 : 1) + ' km' : Math.round(m / 10) * 10 + ' m');
 
   IDE.tabDefs.cluster = {
@@ -86,12 +100,26 @@
       const fsBtn = (el, label) => h('button', { class: 'btn sm', type: 'button', onclick: () => { try { el.requestFullscreen(); } catch (e) { /* sem tela cheia */ } } }, ic('expand', 14), label);
       const huList = h('pre', { class: 'logbox cl-hu' });
       const huSum = h('summary', null, 'Mensagens do HMI para o cluster e o HUD');
+      const plugList = h('pre', { class: 'logbox cl-hu' });
+      const plugSum = h('summary', null, 'Plugin HUD output (NavBridge, Wayglass)');
+      // NavBridge virtual feed: sends a maneuver to its listener in the guest (POST /api/plugins/navbridge -> agent.sh -> navbridge-inject-qnx)
+      const nbTurn = h('select', { class: 'input sm', 'aria-label': 'Turn' }, ['STRAIGHT', 'LEFT', 'RIGHT', 'UTURN'].map((t) => h('option', { value: t }, t)));
+      const nbDist = h('input', { class: 'input sm num', type: 'text', value: '250', maxlength: 8, style: 'width:70px', 'aria-label': 'Distance' });
+      const nbUnit = h('select', { class: 'input sm', 'aria-label': 'Unit' }, ['m', 'km', 'mi', 'ft', 'yd'].map((u) => h('option', { value: u }, u)));
+      const nbStreet = h('input', { class: 'input sm', type: 'text', value: 'MAIN STREET', maxlength: 32, 'aria-label': 'Street' });
+      const nbSend = (cmd, btn) => IDE.busy(btn, async () => { try { await IDE.post('/api/plugins/navbridge', { cmd }); IDE.toast('Sent to NavBridge.', 'success'); } catch (e) { IDE.toastErr(e); } });
+      const nbShow = h('button', { class: 'btn sm primary', type: 'button' }, 'Show');
+      nbShow.addEventListener('click', () => nbSend(['SHOW', nbTurn.value, nbDist.value.trim(), nbUnit.value, nbStreet.value.trim().toUpperCase()].join('|'), nbShow));
+      const nbClear = h('button', { class: 'btn sm', type: 'button' }, 'Clear');
+      nbClear.addEventListener('click', () => nbSend('CLEAR', nbClear));
+      const nbBox = h('div', { class: 'uds-test' }, h('b', null, 'NavBridge'), nbTurn, nbDist, nbUnit, nbStreet, nbShow, nbClear);
       const box = h('div', { class: 'cluster' },
         h('p', { class: 'help' }, 'O cluster e o HUD mostram o carro virtual: velocidade, rotação, câmbio, luzes e alertas vêm do CAN; a posição vem do GPS. Mude os sinais na aba CAN e veja o painel reagir. A próxima curva é calculada pela rota do GPS virtual: o iDrive emulado não tem motor de navegação, então o HMI não manda manobras ao cluster.'),
         note,
         h('div', { class: 'cl-head' }, h('b', null, 'Cluster (Kombi)'), fsBtn(clWrap, 'Tela cheia')), clWrap,
         h('div', { class: 'cl-head' }, h('b', null, 'HUD'), fsBtn(hudWrap, 'Tela cheia')), hudWrap,
-        h('details', { class: 'cl-det' }, huSum, huList));
+        h('details', { class: 'cl-det' }, huSum, huList),
+        h('details', { class: 'cl-det' }, plugSum, h('p', { class: 'help' }, 'Start NavBridge in Virtual feed mode on the head unit, then send maneuvers from here. It clears itself 15 s after the last SHOW.'), nbBox, plugList));
       IDE.add(host, box);
       const $ = (id) => box.querySelector('#' + id);
       const needles = {};
@@ -128,13 +156,21 @@
         drawPills(d.warnings || []);
         // HUD
         $('hud-speed').textContent = Math.round(spd); $('hud-gear').textContent = gear;
-        const g = d.gps, tu = g && g.turn, arrow = $('hud-arrow'), dist = $('hud-dist');
-        if (tu) { arrow.innerHTML = arrowPath(tu.dir); dist.textContent = km(tu.dist_m); }
+        const g = d.gps, tu = g && g.turn, arrow = $('hud-arrow'), dist = $('hud-dist'), pl = d.plugins || {}, nb = pl.navbridge;
+        $('hud-street').textContent = ''; $('hud-src').textContent = '';
+        if (nb && nb.status === 'SHOW') {
+          arrow.innerHTML = nbArrow(String(nb.turn || '').toUpperCase());
+          dist.textContent = (nb.distance || '') + ' ' + (nb.unit || '');
+          $('hud-street').textContent = nb.street || ''; $('hud-src').textContent = 'NavBridge';
+        } else if (tu) { arrow.innerHTML = arrowPath(tu.dir); dist.textContent = km(tu.dist_m); }
         else if (g && g.route && g.remaining_m != null) { arrow.innerHTML = arrowPath('straight'); dist.textContent = km(g.remaining_m); }
         else { arrow.innerHTML = ''; dist.textContent = ''; }
         const hu = d.hu || [];
         huList.textContent = hu.length ? hu.map((m) => m.dev + ' ' + m.name + '  op=' + m.op + '  x' + m.n + '  ' + IDE.t('há {s} s', { s: m.age }) + '  ' + m.hex).join('\n') : IDE.t('O HMI ainda não mandou nada ao cluster nem ao HUD.');
         huSum.textContent = IDE.t('Mensagens do HMI para o cluster e o HUD') + ' (' + hu.length + ')';
+        const plText = [nb ? 'NavBridge state (' + IDE.t('há {s} s', { s: nb.age }) + '): ' + Object.keys(nb).filter((k) => k !== 'age').map((k) => k + '=' + nb[k]).join('  ') : null,
+          pl.navbridge_log ? 'NavBridge last-run.log:' + '\n' + pl.navbridge_log : null, pl.navbridge_inject ? 'navbridge-inject:' + '\n' + pl.navbridge_inject : null, pl.wayglass_status ? 'Wayglass nbt-hud-guide.status:' + '\n' + pl.wayglass_status : null].filter(Boolean).join('\n\n');
+        plugList.textContent = plText || IDE.t('No plugin has written HUD output yet.');
       }
       async function load() {
         try { last = await api('/api/cluster'); note.classList.add('hidden'); render(last); }

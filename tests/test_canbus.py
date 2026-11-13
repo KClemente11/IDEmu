@@ -321,6 +321,8 @@ class TestScenarios(unittest.TestCase):
         bus._scenario_step(20.0)
         self.assertEqual(bus.get_signal("vehicle_speed"), 118)
         self.assertGreater(bus.get_signal("engine_rpm"), 1500)          # drivetrain derivado
+        self.assertTrue(0 < bus.get_signal("engine_torque_pct") <= 100)  # exibição esportiva derivada do acelerador
+        self.assertTrue(0 < bus.get_signal("engine_power_pct") <= bus.get_signal("engine_torque_pct"))
         bus._scenario_step(10.0)
         self.assertAlmostEqual(bus.get_signal("vehicle_speed"), 114, delta=1)
         bus.run_scenario(None)

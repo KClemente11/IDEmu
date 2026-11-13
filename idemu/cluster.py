@@ -90,7 +90,28 @@ def warnings(v):
     elif v.get('headlight_low'): w.append(('low_beam', 'info'))
     return w
 
-def snapshot(can, gps, bridge=None):
+NAVBRIDGE_STATE = '/dev/shmem/navbridge-state.txt'
+NAVBRIDGE_LOG = '/var/opt/hmi/data/ID5/Plugins/NavBridge/last-run.log'
+WAYGLASS_STATUS = '/dev/shmem/nbt-hud-guide.status'
+
+def plugin_hud(files):
+    """HUD output of head-unit plugins, from guest files the shim forwards (runtime.DataChannel): NavBridge's virtual feed
+    (status=SHOW|CLEAR, turn, distance, unit, street), its log tail, and Wayglass's status file. None when nothing was seen."""
+    if not files: return None
+    now, out = time.time(), {}
+    st = files.get(NAVBRIDGE_STATE)
+    if st and st.get('data') is not None:
+        kv = {}
+        for line in st['data'].decode('ascii', 'replace').splitlines():
+            if '=' in line: k, v = line.split('=', 1); kv[k.strip()] = v.strip()
+        kv['age'] = round(now - st['t'], 1)
+        out['navbridge'] = kv
+    for key, path in (('navbridge_log', NAVBRIDGE_LOG), ('wayglass_status', WAYGLASS_STATUS), ('navbridge_inject', '/var/idemu/navbridge-inject.log')):
+        f = files.get(path)
+        if f and f.get('data') is not None: out[key] = f['data'].decode('utf-8', 'replace')[-1500:]
+    return out or None
+
+def snapshot(can, gps, bridge=None, files=None):
     """Estado do cluster e do HUD: sinais do CAN, posição do GPS, próxima curva e mensagens do HMI para o Kombi/HUD."""
     v = {}
     for n in SIGNALS:
@@ -108,4 +129,5 @@ def snapshot(can, gps, bridge=None):
     fuel = v.get('fuel_level', 0.0)
     return {'signals': v, 'gps': g, 'fuel_pct': round(max(0.0, min(1.0, fuel / TANK_L)) * 100.0, 1), 'range_km': int(max(0.0, fuel) / max(4.0, v.get('fuel_consumption', 7.5) or 7.5) * 100.0),
             'warnings': [{'id': i, 'level': l} for i, l in warnings(v)],
-            'hu': hu_messages(getattr(bridge, 'seen', None)), 'hu_note': 'mensagens que o HMI enviou ao Kombi (0xE0) e ao HUD (0xE1) por MOST'}
+            'hu': hu_messages(getattr(bridge, 'seen', None)), 'hu_note': 'mensagens que o HMI enviou ao Kombi (0xE0) e ao HUD (0xE1) por MOST',
+            'plugins': plugin_hud(files)}

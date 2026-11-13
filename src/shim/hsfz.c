@@ -5,13 +5,19 @@
 
    Each UDS request goes to the host over UART1 as a text line "Q <seq> <src> <tgt> <hex>". The host (idemu/uds.py)
    answers "U <seq> <hex>" ("-" = no reply), the guest agent (agent.sh, the reader of /dev/ser5) writes the answer to
-   /var/idemu/uds/<seq>, and this thread picks it up and sends the HSFZ reply. */
+   /var/idemu/uds/<seq>, and this thread picks it up and sends the HSFZ reply.
+
+   The same UART also carries guest files to the host: when /fs/shim/watch.cfg exists (one path per line), a thread
+   polls those files and sends "F <path> <hex>" whenever one changes ("F <path> -" when it is missing). Files longer
+   than WATCH_MAX bytes are sent as their last WATCH_MAX bytes. The host uses this for plugin output such as the
+   NavBridge virtual HUD state (/dev/shmem/navbridge-state.txt). */
 #include "common.h"
 extern void *dlopen(const char*,int); extern void *dlsym(void*,const char*);
 extern int pthread_create(void*,const void*,void*(*)(void*),void*);
 extern int snprintf(char*,unsigned long,const char*,...);
 extern int unlink(const char*);
 extern long read(int,void*,unsigned long);
+extern long lseek(int,long,int);
 
 typedef struct { u8 len, family; u16 port; u32 addr; u8 zero[8]; } sin_t;    /* BSD sockaddr_in (QNX io-pkt) */
 static int (*s_socket)(int,int,int); static int (*s_setsockopt)(int,int,int,const void*,int);
@@ -20,6 +26,13 @@ static long (*s_recv)(int,void*,unsigned long,int); static long (*s_send)(int,co
 static int (*s_open)(const char*,int,...);       /* libc's own open: the shim's open() logs every missing file */
 static int ser = -1;
 static u32 seq;
+static volatile int ser_lock;
+static void *watcher(void *arg); static int load_watch(void); static int nwatch;
+static int ser_write(const char *b, int n){        /* one line at a time: the watcher and the gateway share the UART */
+  while(__atomic_exchange_n(&ser_lock,1,__ATOMIC_ACQUIRE)) usleep(500);
+  int r=ser<0?-1:(int)write(ser,b,(unsigned long)n);
+  __atomic_store_n(&ser_lock,0,__ATOMIC_RELEASE); return r;
+}
 
 static int rd(int fd, u8 *b, u32 n){ while(n){ long k=s_recv(fd,b,n,0); if(k<=0) return 0; b+=k; n-=(u32)k; } return 1; }
 static int wr(int fd, const u8 *b, u32 n){ while(n){ long k=s_send(fd,b,n,0); if(k<=0) return 0; b+=k; n-=(u32)k; } return 1; }
@@ -40,7 +53,7 @@ static int ask_host(u8 src, u8 tgt, const u8 *req, u32 n, u8 *rep, u32 cap){
   int k=snprintf(line,sizeof line,"Q %u %02X %02X ",s,src,tgt);
   for(u32 i=0;i<n;i++){ line[k++]=hx[req[i]>>4]; line[k++]=hx[req[i]&15]; }
   line[k++]='\n';
-  if(ser<0||write(ser,line,k)!=k) return -1;
+  if(ser_write(line,k)!=k) return -1;
   char path[64]; snprintf(path,sizeof path,"/var/idemu/uds/%u",s);
   for(int w=0;w<1000;w++){                        /* up to ~2 s */
     int fd=s_open(path,0);
@@ -84,6 +97,7 @@ static void *server(void *arg){
   if(!s_socket||!s_bind||!s_listen||!s_accept||!s_recv||!s_send||!s_open){ br_log("hsfz: socket functions missing"); return 0; }
   ser=s_open("/dev/ser5",1);
   if(ser<0) br_log("hsfz: cannot open /dev/ser5 (UART1 to the host)");
+  if(ser>=0&&load_watch()){ u32 wt; pthread_create(&wt,0,watcher,0); br_logx("hsfz: watching guest files",(u32)nwatch,0,0); }
   for(int attempt=0;;attempt++){
     int ls=s_socket(2,1,0);
     if(ls>=0){
@@ -103,6 +117,41 @@ static void *server(void *arg){
     usleep(2000000);
   }
   return 0;
+}
+
+#define WATCH_N 8
+#define WATCH_MAX 900
+static char wpath[WATCH_N][128];
+static u32 fnv(const u8 *p, long n){ u32 h=2166136261u; for(long i=0;i<n;i++){ h^=p[i]; h*=16777619u; } return h^(u32)n; }
+static void *watcher(void *arg){
+  (void)arg; static const char hx[]="0123456789ABCDEF";
+  u32 last[WATCH_N]; int seen[WATCH_N]; memset(seen,0,sizeof seen);
+  static u8 buf[WATCH_MAX]; static char line[160+2*WATCH_MAX];
+  for(;;){
+    for(int i=0;i<nwatch;i++){
+      long n=-1; int fd=s_open(wpath[i],0);
+      if(fd>=0){ long end=lseek(fd,0,2); if(end>WATCH_MAX) lseek(fd,end-WATCH_MAX,0); else lseek(fd,0,0); n=read(fd,buf,WATCH_MAX); close(fd); if(n<0) n=0; }
+      u32 h=n<0?0xFFFFFFFFu:fnv(buf,n);
+      if(seen[i]&&h==last[i]) continue;
+      seen[i]=1; last[i]=h;
+      int k=snprintf(line,160,"F %s ",wpath[i]);
+      if(n<0) line[k++]='-'; else for(long j=0;j<n;j++){ line[k++]=hx[buf[j]>>4]; line[k++]=hx[buf[j]&15]; }
+      if(n==0) line[k++]='.';                       /* empty file */
+      line[k++]='\n'; ser_write(line,k);
+    }
+    usleep(250000);
+  }
+  return 0;
+}
+static int load_watch(void){
+  int fd=s_open("/fs/shim/watch.cfg",0); if(fd<0) return 0;
+  char b[1024]; long n=read(fd,b,sizeof b-1); close(fd); if(n<=0) return 0; b[n]=0;
+  for(char *p=b; *p && nwatch<WATCH_N; ){
+    char *e=p; while(*e&&*e!='\n'&&*e!='\r') e++;
+    int L=(int)(e-p); if(L>0&&L<127&&*p=='/'){ memcpy(wpath[nwatch],p,L); wpath[nwatch][L]=0; nwatch++; }
+    p=*e?e+1:e;
+  }
+  return nwatch;
 }
 
 void hsfz_start(void){

@@ -597,6 +597,13 @@ class CanBus(object):
         if "fuel_consumption" not in tracks:
             self._values["fuel_consumption"] = self._signals["fuel_consumption"].coerce(
                 0.0 if v < 0.5 else min(40.0, 4.0 + v / 14.0))
+        # exibição esportiva (MOST 0xC7B): torque ~ acelerador numa curva plana; potência = torque * rpm / rpm de potência máx.
+        acc = float(self._values.get("accelerator_pos", 0.0))
+        tq = acc * min(1.0, 0.6 + rpm / 4000.0)
+        if "engine_torque_pct" in self._signals and "engine_torque_pct" not in tracks:
+            self._values["engine_torque_pct"] = self._signals["engine_torque_pct"].coerce(round(tq))
+        if "engine_power_pct" in self._signals and "engine_power_pct" not in tracks:
+            self._values["engine_power_pct"] = self._signals["engine_power_pct"].coerce(round(tq * min(1.0, rpm / 6000.0)))
 
     def scenarios(self):
         """Formato de GET /api/can/scenarios."""
