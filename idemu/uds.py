@@ -442,6 +442,174 @@ def _add_s63tu_extended_presets():
 
 _add_s63tu_extended_presets()
 
+
+# ------------------------------------------------------------------------------------------------- vehicle profiles
+# Complete virtual cars for testing BoostDeck's automatic engine/gearbox identification. Use them with the UDS tab's
+# "Replace" button (Add would leave ECUs of the previous car behind, e.g. DME2 0x13). The original b58/s63tu/dkg_10
+# presets and the default configuration are unchanged.
+#
+# Identification DIDs (PRG IDENT / ECU_CONFIG jobs, s63tu_r0.prg, n55_alp.prg, dkg_10.prg):
+#   22 F150  ID_SGBD_INDEX = data bytes 0..2. Only DKG_10 0F1870 is a captured value; the DME indices below are
+#            emulator placeholders (marked as such) so a change of virtual car is visible to the plugin.
+#   22 5FF2  ECU_CONFIG on MEVD17 DMEs: 74 data bytes; STAT_TURBO_WERT byte 3, STAT_EGS_WERT byte 26,
+#            STAT_DKG_WERT byte 27, STAT_MSA_WERT byte 32 (raw flags). The B58 (MG1) PRG is not available, so the
+#            B58 profile does not answer 5FF2.
+def _ecu_config(egs, dkg):
+    return {'name': 'ECU_CONFIG (PRG 22 5FF2)', 'length': 74, 'fill': 0, 'fields': [
+        _v('STAT_TURBO_WERT', '0/1', 1, 1, 1, pos=3),
+        _v('STAT_EGS_WERT', '0/1', 1, 1, egs, pos=26),
+        _v('STAT_DKG_WERT', '0/1', 1, 1, dkg, pos=27),
+        _v('STAT_MSA_WERT', '0/1', 1, 1, 1, pos=32),
+    ]}
+
+
+def _placeholder_index(hexstr):
+    return {'name': 'IDENT SGBD index (emulator placeholder, not a captured car value)', 'hex': hexstr}
+
+
+def _obd_single_dme(extra=None):
+    """SAE J1979 mode 01 for a single-DME inline six (one bank: 01 06/07 only)."""
+    d = {
+        '04': _v('Calculated engine load', '%', 1, 100 / 255.0, wave=(9, 55, 8)),
+        '05': _v('Coolant temperature', 'C', 1, 1, 88, offset=-40),
+        '06': _v('STFT bank 1', '%', 1, 100 / 128.0, wave=(-3.1, 6.25, 5), offset=-100),
+        '07': _v('LTFT bank 1', '%', 1, 100 / 128.0, 2.3, offset=-100),
+        '0C': _v('Engine speed', 'rpm', 2, 0.25, wave=(750, 6200, 8)),
+        '0D': _v('Vehicle speed', 'km/h', 1, 1, wave=(0, 110, 20)),
+        '0F': _v('Intake air temperature', 'C', 1, 1, 31, offset=-40),
+        '10': _v('Mass air flow', 'g/s', 2, 0.01, wave=(4.5, 180, 8)),
+        '11': _v('Throttle position', '%', 1, 100 / 255.0, wave=(3, 85, 6)),
+        '23': _v('Fuel rail pressure (gauge)', 'bar', 2, 0.1, wave=(50, 200, 9)),
+        '5C': _v('Engine oil temperature', 'C', 1, 1, wave=(85, 104, 75), offset=-40),
+    }
+    if extra: d.update(extra)
+    return d
+
+
+# N55 STATUS_MESSWERTE (n55_alp.prg, 22 40 00 -> 62 40 00 + 44 data bytes). Offsets are data-byte positions; the
+# scalars used by BoostDeck sit at the same positions as on the S63TU (40 bytes), the N55 adds LR2 at byte 6 and
+# six knock channels. Data bytes 0..3 are not defined by the PRG (FF fill).
+_N55_4000_FIELDS = [
+    _v('STAT_LR1_MW (lambda regulator 1)', '', 2, 0.000244140625, 1.0, pos=4),
+    _v('STAT_LR2_MW (lambda regulator 2)', '', 2, 0.000244140625, 1.0, pos=6),
+    _v('STAT_VFZG_MW (vehicle speed)', 'km/h', 2, 0.0078125, wave=(0, 110, 20), pos=8),
+    _v('STAT_NMOT_W_MW (engine speed)', '1/min', 2, 0.25, wave=(750, 6200, 8), pos=10),
+    _v('STAT_NSOL_MW (target idle)', '1/min', 2, 0.25, 680, pos=12),
+    _v('STAT_CAM_IN (intake cam)', 'degCA', 2, 0.0078125, 18, signed=True, pos=14),
+    _v('STAT_CAM_EX (exhaust cam)', 'degCA', 2, 0.0078125, -12, signed=True, pos=16),
+    _v('STAT_TIA (intake air)', 'C', 1, 0.75, 31, offset=-48, pos=18),
+    _v('STAT_TMOT (coolant)', 'C', 1, 0.75, 88, offset=-48, pos=19),
+    _v('STAT_IGA_IGC (ignition angle)', 'deg', 2, 0.1, wave=(2, 24, 7), signed=True, pos=20),
+    _v('STAT_TPS_AV_1 (throttle)', '% DK', 2, 0.0244140625, wave=(3, 85, 6), signed=True, pos=22),
+    _v('STAT_MAF_KGH_MES_BAS (air mass)', 'kg/h', 2, 0.1, wave=(16, 650, 8), signed=True, pos=24),
+    _v('STAT_TQI_AV (torque)', 'Nm', 2, 0.5, wave=(30, 420, 8), signed=True, pos=26),
+    _v('STAT_VB (battery)', 'V', 1, 0.0942, 14.2, pos=28),
+    _v('STAT_V_PVS_1 (pedal sensor)', 'V', 2, 0.0048828125, 0.75, pos=29, mask=1023),
+    _v('STAT_TMOTLINF', 'C', 1, 0.75, 88, offset=-48, pos=31),
+] + [_v('STAT_NL_%d (knock)' % n, 'V', 2, 0.0048828125, 1.0, pos=p)
+     for n, p in ((1, 32), (5, 34), (3, 36), (6, 38), (2, 40), (4, 42))]
+
+
+def _mevd17_standalone(label):
+    """SG_FUNKTIONEN standalone DIDs shared by n55_alp.prg and s63tu_r0.prg (service 22)."""
+    return {
+        '4201': _v(label + ' ambient pressure (STAT_UMGEBUNGSDRUCK)', 'kPa', 2, 1 / 256.0, 100.9),
+        '4205': _v(label + ' boost pressure absolute (STAT_LADEDRUCK)', 'kPa', 2, 1 / 128.0, wave=(100, 230, 8)),
+        '5889': _v(label + ' lambda bank 1 (STAT_LAMBDA_ISTWERT_GRUPPE1)', '', 2, 1 / 4096.0, wave=(0.82, 1.01, 5)),
+        '4A49': _v(label + ' ignition cyl 1 (STAT_ZUENDWINKEL_ZYL1)', 'deg', 2, 0.1, signed=True, wave=(2, 24, 7)),
+        '580F': _v(label + ' intake air temperature (STAT_ANSAUGLUFTTEMPERATUR)', 'C', 1, 0.75, 31, offset=-48),
+        '4300': _v(label + ' coolant temperature (STAT_KUEHLMITTELTEMPERATUR)', 'C', 1, 0.75, 88, offset=-48),
+        '4807': _v(label + ' engine speed (STAT_MOTORDREHZAHL)', '1/min', 2, 0.25, wave=(750, 6200, 8)),
+        '586F': _v(label + ' oil pressure (STAT_0x586F, hPa)', 'hPa', 2, 1, wave=(1800, 4500, 9), signed=True),
+    }
+
+
+# ZF 8HP Gen2 (gkeb23tu.prg "Elektronische Getriebesteuerung Elektrische-Schaltung", EGS_EL), SG_FUNKTIONEN and
+# RES_0x.... tables. EDIABAS types: int = signed 16 bit, unsigned int = 16 bit, (unsigned) long = 32 bit, char = 8 bit.
+# Counter/time values are plausible seeds, not captured from a car.
+_EGS_TEMP_RANGES_S = (40 * 3600, 210 * 3600, 260 * 3600, 330 * 3600, 290 * 3600, 150 * 3600, 70 * 3600,
+                      22 * 3600, 6 * 3600, 2 * 3600, 1500, 120, 0)   # RES_0x4441, 13 x u32 seconds
+
+
+def _egs_8hp(index_hex):
+    ranges = '-40..40,40..80,80..90,90..95,95..100,100..105,105..110,110..115,115..120,120..130,130..140,' \
+             '140..170,uncertain'.split(',')
+    return {'name': 'EGS (ZF 8HP, gkeb23tu)', 'dids': {
+        'F150': _placeholder_index(index_hex),
+        'DA12': _v('STAT_GETRIEBEOELTMEPERATUR_WERT (oil temp)', 'C', 2, 1, wave=(62, 96, 120), offset=-48,
+                   signed=True),
+        'DA25': _v('STAT_MOTOROELTEMPERATUR_WERT (engine oil)', 'C', 2, 1, 98, offset=-48, signed=True),
+        'DA26': _v('STAT_MOTORTEMPERATUR_WERT (engine)', 'C', 2, 1, 90, offset=-48, signed=True),
+        'DA1C': _v('STAT_GESCHWINDIGKEIT_WERT (speed)', 'km/h', 2, 1 / 16.0, wave=(0, 110, 20), signed=True),
+        'DA2E': _v('STAT_ISTGANG (current gear)', '0-n', 2, 1, 4, signed=True),
+        'DA37': {'name': 'RES_0xDA37 time in D / S / manual', 'length': 12, 'fill': 0, 'fields': [
+            _v('STAT_D_ZAEHLER_WERT', 's', 4, 1, 1250 * 3600, pos=0),
+            _v('STAT_S_ZAEHLER_WERT', 's', 4, 1, 210 * 3600, pos=4),
+            _v('STAT_M_ZAEHLER_WERT', 's', 4, 1, 35 * 3600, pos=8)]},
+        '4441': {'name': 'RES_0x4441 time per oil temperature range', 'length': 52, 'fill': 0, 'fields': [
+            _v('STAT_TEMPERATURBEREICH_%d_WERT (%s C)' % (i + 1, r), 's', 4, 1, v, pos=i * 4)
+            for i, (r, v) in enumerate(zip(ranges, _EGS_TEMP_RANGES_S))]},
+        '4130': {'name': 'RES_0x4130 fast-fill adaptation counters A..E', 'length': 10, 'fill': 0, 'fields': [
+            _v('STAT_ADAPTIONSWERTE_KSFCTR_KUPPLUNG_%s_WERT' % c, '', 2, 1, v, pos=i * 2)
+            for i, (c, v) in enumerate(zip('ABCDE', (412, 388, 405, 97, 233)))]},
+        '4131': {'name': 'RES_0x4131 fill-pressure adaptation counters A..E', 'length': 10, 'fill': 0, 'fields': [
+            _v('STAT_ADAPTIONSWERTE_KPFCTR_KUPPLUNG_%s_WERT' % c, '', 2, 1, v, pos=i * 2)
+            for i, (c, v) in enumerate(zip('ABCDE', (1210, 1188, 1302, 640, 954)))]},
+        '4132': _v('STAT_ADAPTIONSWERTE_NICCTR_WERT (NIC adaptations)', '', 2, 1, 57),
+        '41A1': _v('STAT_ADAPTIONSWERTE_WK_CTR_WERT (converter adaptations)', '', 2, 1, 143),
+        '4300': _v('STAT_AUTO_P_EMF3_ZAEHLER_WERT', '', 1, 1, 3),
+        '4301': _v('STAT_AUTO_P_EMF2_ZAEHLER_WERT', '', 1, 1, 11),
+        '4302': _v('STAT_AUTO_P_EMF1_ZAEHLER_WERT', '', 1, 1, 6),
+        '4445': _v('STAT_COUNT_FORCEDSHIFTUP_WERT (engine upshift requests)', '', 1, 1, 21),
+        '431B': _v('STAT_CNT_ENGER_ENABLED_WERT (P engaged by EGNER)', '', 1, 1, 2),
+    }}
+
+
+def _egs_ecu(index_hex):
+    return _egs_8hp(index_hex)
+
+
+def _add_vehicle_profiles():
+    # S63TU (F1x M5/M6): DME1 0x12 + DME2 0x13 + DKG_10 0x18, i.e. the existing s63tu preset plus identification.
+    s63 = copy.deepcopy(PRESETS['s63tu'])
+    s63['ecus']['12']['dids']['F150'] = _placeholder_index('0A6301')
+    s63['ecus']['12']['dids']['5FF2'] = _ecu_config(egs=0, dkg=1)
+    s63['ecus']['13']['dids']['F150'] = _placeholder_index('0A6302')
+    s63['ecus']['13']['dids']['5FF2'] = _ecu_config(egs=0, dkg=1)
+    PRESETS['vehicle_s63tu'] = {
+        'label': 'Vehicle: S63TU M5/M6 (DME1 + DME2 + DKG_10)',
+        'note': 'Twin MEVD17.2.8 DMEs (0x12/0x13, 22 4000 = 40 data bytes) and DKG_10 (F150 0F1870 captured). '
+                'ECU_CONFIG reports DKG. DME F150 values are placeholders. Use Replace.',
+        'ecus': s63['ecus'],
+    }
+    # N55 (single MEVD17.2 DME), 8HP automatic.
+    n55_dids = _mevd17_standalone('N55')
+    n55_dids['4000'] = {'name': 'STATUS_MESSWERTE (n55_alp.prg)', 'length': 44, 'fill': 0xFF,
+                        'fields': copy.deepcopy(_N55_4000_FIELDS)}
+    n55_dids['F150'] = _placeholder_index('0A5501')
+    n55_dids['5FF2'] = _ecu_config(egs=1, dkg=0)
+    PRESETS['vehicle_n55'] = {
+        'label': 'Vehicle: N55 + ZF 8HP (n55_alp + gkeb23tu)',
+        'note': 'n55_alp.prg: 22 4000 = 44 data bytes, standalone DIDs from SG_FUNKTIONEN, OBD mode 01 baseline. '
+                'No DME2. ECU_CONFIG reports EGS. 8HP from gkeb23tu.prg: DA12 oil temp, time in D/S/M, oil '
+                'temperature histogram, adaptation and auto-P counters. F150 values are placeholders. Use Replace.',
+        'ecus': {'12': {'name': 'DME (N55)', 'dids': n55_dids, 'obd': _obd_single_dme()},
+                 '18': _egs_ecu('0A8801')},
+    }
+    # B58 (MG1): the reference DIDs from SIGNALS.md; no PRG available, so no 4000 group and no ECU_CONFIG.
+    b58_dids = copy.deepcopy(PRESETS['b58']['ecus']['12']['dids'])
+    b58_dids['F150'] = _placeholder_index('0B5801')
+    PRESETS['vehicle_b58'] = {
+        'label': 'Vehicle: B58 340i (single DME + 8HP EGS)',
+        'note': 'Reference B58 DIDs (docs/SIGNALS.md) plus OBD mode 01. No B58 PRG: 22 4000 and 22 5FF2 answer '
+                'NRC 31, like an unknown DME. F150 values are placeholders. Use Replace.',
+        'ecus': {'12': {'name': 'DME (B58)', 'dids': b58_dids, 'obd': _obd_single_dme()},
+                 '18': _egs_ecu('0A8802')},
+    }
+
+
+_add_vehicle_profiles()
+
 SERVICES = {0x10: 'DiagnosticSessionControl', 0x11: 'ECUReset', 0x14: 'ClearDTC', 0x19: 'ReadDTC', 0x22: 'ReadDataByIdentifier',
             0x27: 'SecurityAccess', 0x2F: 'IOControl', 0x31: 'RoutineControl', 0x3E: 'TesterPresent', 0x01: 'OBD mode 01',
             0x09: 'OBD mode 09'}
