@@ -42,16 +42,17 @@ anchor = "system_ss.add(when: 'CONFIG_PCI_TESTDEV'"
 assert anchor in t
 open(p, 'w', newline='').write(t.replace(anchor, "system_ss.add(when: 'CONFIG_IDEMU_SHM', if_true: files('idemu-shm.c'))\n" + anchor, 1))
 PYEOF
+python3 "$root/tools/qemu/install-mgu8-backend.py" "$source"
 cd "$work/build"
 CIC_QEMU="$source" CIC_PATCH_ONLY=1 bash "$root/src/cic/build.sh"
 if [[ ! -f build.ninja || ! -f meson-private/coredata.dat ]] || ! grep -q '^TARGET_DIRS=.*sh4-softmmu' config-host.mak ||
-   ! grep -q '^TARGET_DIRS=.*x86_64-softmmu' config-host.mak; then
-    "$source/configure" --target-list=arm-softmmu,sh4-softmmu,x86_64-softmmu --disable-download --disable-docs \
+   ! grep -q '^TARGET_DIRS=.*x86_64-softmmu' config-host.mak || ! grep -q '^TARGET_DIRS=.*aarch64-softmmu' config-host.mak; then
+    "$source/configure" --target-list=arm-softmmu,sh4-softmmu,x86_64-softmmu,aarch64-softmmu --disable-download --disable-docs \
         --disable-tools --disable-guest-agent --disable-gtk --disable-sdl --disable-vnc \
         --disable-slirp --disable-werror --enable-fdt=system
 fi
-ninja -j "${QEMU_BUILD_JOBS:-8}" qemu-system-arm.exe qemu-system-sh4.exe qemu-system-x86_64.exe
-cp qemu-system-arm.exe qemu-system-sh4.exe qemu-system-x86_64.exe "$dest/"
+ninja -j "${QEMU_BUILD_JOBS:-8}" qemu-system-arm.exe qemu-system-sh4.exe qemu-system-x86_64.exe qemu-system-aarch64.exe
+cp qemu-system-arm.exe qemu-system-sh4.exe qemu-system-x86_64.exe qemu-system-aarch64.exe "$dest/"
 "$dest/qemu-system-arm.exe" -machine help | grep '^omap5-uevm '
 "$dest/qemu-system-sh4.exe" -machine help | grep '^cic '
 "$dest/qemu-system-x86_64.exe" -device help | grep 'idemu-shm'
@@ -63,11 +64,12 @@ done
 sh "$root/src/glhost/build.sh"
 # iDrive 7 renderer: OpenGL 4.1 core through WGL and GLEW.
 gcc -O2 "$root/src/mgu/glhost7.c" -o "$dest/glhost7.exe" -lglew32 -lopengl32 -lgdi32 -lwinmm
+gcc -O2 "$root/src/mgu22/mguhost.c" -o "$dest/mguhost.exe" -lwinpthread -lws2_32 -lwinmm
 
 # Include the transitive MinGW DLL dependencies. Windows supplies the system DLLs.
 cd "$dest"
 declare -A staged
-pending=(qemu-system-arm.exe qemu-system-sh4.exe qemu-system-x86_64.exe glhost.exe glhost7.exe)
+pending=(qemu-system-arm.exe qemu-system-sh4.exe qemu-system-x86_64.exe qemu-system-aarch64.exe glhost.exe glhost7.exe mguhost.exe)
 while (("${#pending[@]}")); do
     binary=${pending[0]}
     pending=("${pending[@]:1}")

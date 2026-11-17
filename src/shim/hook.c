@@ -87,7 +87,7 @@ static void touch_send(u32 state,u32 x,u32 y,u32 hms){
   if(!tdc_client){ static int n; if(n++<5) br_logx("touch: sem cliente",state,x,y); return; }
   touch_enable();
   /* sem o monitor de verdade, o serviço de display acha que a tela está apagada e usa o primeiro toque só para acordá-la: marca como ligada */
-  if(disp_svc&&(!disp_svc[0x3c]||!disp_svc[0x3d])){ disp_svc[0x3c]=1; disp_svc[0x3d]=1; ((void(*)(void*,int))0x2df744)(disp_svc,1); br_logx("touch: display marcado como ligado",(u32)disp_svc,0,0); }
+  if(disp_svc&&(!disp_svc[0x30]||!disp_svc[0x3c]||!disp_svc[0x3d])){ disp_svc[0x30]=1; disp_svc[0x3c]=1; ((void(*)(void*,int))0x2df744)(disp_svc,0); br_logx("touch: virtual monitor hardware on",(u32)disp_svc,disp_svc[0x30],disp_svc[0x3d]); }
   /* o tratador de gestos descarta o primeiro toque quando acha que a tela está apagada (+0x30 == 0): ele só a "acorda" */
   { u32 *ip=*(u32**)((u8*)tdc_client+0xd8); int k=0; while(ip&&k<10){ if(ip[3]==0x3384e8){ u8 *ob=(u8*)ip[2]+((int)ip[4]>>1); if(!ob[0x30]){ ob[0x30]=1; br_logx("touch: gestos ativos",(u32)ob,0,0); } } ip=(u32*)ip[0]; k++; } }
   u8 *f=(u8*)malloc(16); memset(f,0,16); *(u16*)f=(u16)x; *(u16*)(f+2)=(u16)y; *(u16*)(f+4)=30; f[6]=0; f[7]=(u8)state; f[8]=1;
@@ -108,7 +108,7 @@ static void input_main(u8 *pu){
     else if(e[0]==40){ touch_send(e[1],e[2]&0xffff,e[2]>>16,e[3]==0xffff?0:e[3]); }
     else if(e[0]==9){ void*h=hook_home(); br_logx("home app",(u32)h,h?*((u8*)h+0x338):0,0); if(h) ((void(*)(void*,int))0x2f7114)(h,e[1]); }
     else if(e[0]==7){ u8 *o=((u8*(*)(void))0x228384)(); u8 *x=o?*(u8**)(o+8):0; u8 *h=x?((u8*(*)(void*))0x60af10)(x):0; br_logx("dbg obj",(u32)o,(u32)x,(u32)h); if(h){ u32 vt=*(u32*)h; br_logx("dbg handler vt",vt,*(u32*)(vt+0xc),*(u32*)(vt+8)); } }
-    else if(e[0]==6){ br_logx("force display",(u32)disp_svc,disp_svc?disp_svc[0x3c]:0,disp_svc?disp_svc[0x3d]:0); if(disp_svc){ disp_svc[0x3c]=1; disp_svc[0x3d]=1; ((void(*)(void*,int))0x2df744)(disp_svc,1); } }
+    else if(e[0]==6){ br_logx("force display",(u32)disp_svc,disp_svc?disp_svc[0x3c]:0,disp_svc?disp_svc[0x3d]:0); if(disp_svc){ disp_svc[0x30]=1; disp_svc[0x3c]=1; ((void(*)(void*,int))0x2df744)(disp_svc,0); } }
     else if(e[0]==5){ u8*h=(u8*)hook_home(); if(h){ br_logx("home flags",h[0x338]|h[0x339]<<8|h[0x33a]<<16|h[0x33b]<<24,h[0x33c],e[1]); h[0x33b]=e[1]; h[0x33a]=e[2]; } }
     else if(e[0]==8){ void*h=hook_home(); int N=-1; for(int o=-0x2000;o<0x2000&&h;o+=4){ if(*(void**)(pu+o+0x990)==h){ N=o; break; } } br_logx("powermode this-offset",N,(u32)h,e[1]); if(N!=-1) ((void(*)(void*,u32))0x2152c4)(pu+N,e[1]); }
     else if(e[0]==1){ /* button: key event + controller event, as CHmiCCSController::onCCSPushButton does */
@@ -129,12 +129,18 @@ static u32 hk_wh(void *t,u32 a,u32 b,u32 c){ static int n; if(n++<8){ br_logx("w
 static u32 (*lh_tramp)(void*,u32,u32,u32,u32); static u32 (*ch_tramp)(void*,u32,u32,u32,u32);
 static u32 hk_lh(void *t,u32 a,u32 b,u32 c,u32 d){ u32 r=lh_tramp(t,a,b,c,d); br_logx("list handler",a,b,r); return r; }
 static u32 hk_ch(void *t,u32 a,u32 b,u32 c,u32 d){ u32 r=ch_tramp(t,a,b,c,d); br_logx("container handler",a,b,r); return r; }
-static u32 hk_pmd(void){ return 0x64; } /* PMD_Fullon_useron */
-static u32 hk_pm(void){ return 3; }     /* PM_fullon_useron */
 static u32 (*eds_tramp)(void*,u32,u32,u32);
-static u32 hk_eds(void *t,u32 a,u32 b,u32 c){ if(!disp_svc) br_logx("display service",(u32)t,0,0); disp_svc=(u8*)t; return eds_tramp(t,a,b,c); }
-static u32 (*eds2_tramp)(void*,u32,u32,u32);
-static u32 hk_eds2(void *t,u32 a,u32 b,u32 c){ if(!disp_svc) br_logx("display service (2)",(u32)t,0,0); disp_svc=(u8*)t; return eds2_tramp(t,a,b,c); }
+/* The desktop display has no physical CID status sender. Offset 0x30 is the
+   hardware-on flag; 0x3d is logical display-enabled. Leaving 0x30 false makes
+   later focus changes show the native blackscreen despite a healthy renderer.
+   These offsets are for the existing 007_051_002 emulator hooks only. */
+static void virtual_monitor_present(void *t){ ((u8*)t)[0x30]=1; ((u8*)t)[0x3c]=1; }
+static u32 hk_eds(void *t,u32 a,u32 b,u32 c){ if(!disp_svc) br_logx("display service",(u32)t,0,0); disp_svc=(u8*)t; virtual_monitor_present(t); return eds_tramp(t,a,b,c); }
+/* enableDisplayImpl has five boolean arguments after this. Forward the two
+   stack arguments as well: dropping them makes display decisions depend on
+   unrelated wrapper stack contents. */
+static u32 (*eds2_tramp)(void*,u32,u32,u32,u32,u32);
+static u32 hk_eds2(void *t,u32 a,u32 b,u32 c,u32 d,u32 e){ if(!disp_svc) br_logx("display service (2)",(u32)t,0,0); disp_svc=(u8*)t; virtual_monitor_present(t); return eds2_tramp(t,a,b,c,d,e); }
 static void (*alive_tramp)(void*);
 extern int usleep(unsigned);
 /* IDEmu diag (timing): guest tick size, how long sleeps really take, and how long one input poll (bridge round trip) takes. Logging only. */
@@ -218,12 +224,13 @@ void install_hooks(void){ static int done; if(done) return; done=1;
 #ifdef CRASHHK   /* diagnóstico de quedas (-DCRASHHK): ligado, o iDrive 5 não termina de subir (sinal capturado no boot); desligado por padrão */
   signal(11,(void(*)(int))crash_h); signal(10,(void(*)(int))crash_h); signal(4,(void(*)(int))crash_h); signal(8,(void(*)(int))crash_h);
 #endif
-  eds_tramp=(u32(*)(void*,u32,u32,u32))hk_tramp(0x2df744,hk_eds); eds2_tramp=(u32(*)(void*,u32,u32,u32))hk_tramp(0x2dfe98,hk_eds2);
+  eds_tramp=(u32(*)(void*,u32,u32,u32))hk_tramp(0x2df744,hk_eds); eds2_tramp=(u32(*)(void*,u32,u32,u32,u32,u32))hk_tramp(0x2dfe98,hk_eds2);
   tdc_c1=(void*(*)(void*,u32,u32))hk_tdc_tramp(0x2a24660,hk_tdc_a); tdc_c2=(void*(*)(void*,u32,u32))hk_tdc_tramp(0x2a24e48,hk_tdc_b);
   hk_patch((void*)0x2a0d728,hk_mapsurf); hk_patch((void*)0x2a0cd04,hk_unmapsurf);
   lua_err_tramp=(void(*)(u8*))hk_tramp(0x2a4e9b8,hk_luaerr);
   stc_tramp=(int(*)(void*,u32,u32,u32))hk_tramp(0x2f9308,hk_stc);
-  hk_patch((void*)0x18d8800,hk_pmd); hk_patch((void*)0x18d8ef8,hk_pm);
+  /* Keep CHmiPowerMode's native getters: the virtual MOST power service supplies
+     their state. Forcing user-on here suppresses the firmware welcome screen. */
   { void *a=hk_sym("libhmicom.so","_ZN12CHmiProcUnit15updateAliveTimeEv"); if(a) alive_tramp=(void(*)(void*))hk_tramp((u32)a,hk_alive); }
   { static u32 tid; pu_c2=hk_sym("libhmicom.so","_ZN12CHmiProcUnitC2ER18CHmiMainDispatcherh"); if(pu_c2){ pu_saved[0]=((u32*)pu_c2)[0]; pu_saved[1]=((u32*)pu_c2)[1]; hk_patch(pu_c2,hk_pu_c2); } }
   getdef=(int(*)(u32,const u8**,u32*))hk_sym("libhmicoding.so","sysetDefaults_getBuffer");

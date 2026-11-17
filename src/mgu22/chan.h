@@ -7,16 +7,22 @@
 #define CH_RING_B (8u << 20)   // host -> guest
 #define CH_PAGE 4096u
 #define CH_MAXTABLE 64
+/* The wire layout is Linux AArch64 LP64, including on a Windows LLP64 host. */
+typedef __UINT64_TYPE__ ch_u64;
 typedef struct ch_hdr {
   char magic[16];
   unsigned version, pages_a, pages_b, ntable;
-  unsigned long nonce;
+  ch_u64 nonce;
   unsigned pid, tid, role;  // role: 0 = GL, 1 = comandos do host para um daemon do guest
   unsigned table_pfn[CH_MAXTABLE];  // páginas com a tabela u32 pfn[pages_a + pages_b]
-  volatile unsigned long a_wr __attribute__((aligned(64)));
-  volatile unsigned long a_rd __attribute__((aligned(64)));
-  volatile unsigned long b_wr __attribute__((aligned(64)));
-  volatile unsigned long b_rd __attribute__((aligned(64)));
+  volatile ch_u64 a_wr __attribute__((aligned(64)));
+  volatile ch_u64 a_rd __attribute__((aligned(64)));
+  volatile ch_u64 b_wr __attribute__((aligned(64)));
+  volatile ch_u64 b_rd __attribute__((aligned(64)));
 } ch_hdr;
-_Static_assert(sizeof(ch_hdr) <= CH_PAGE, "cabecalho");
+_Static_assert(sizeof(ch_hdr) == 576, "channel wire size");
+_Static_assert(__builtin_offsetof(ch_hdr, nonce) == 32, "channel nonce offset");
+_Static_assert(__builtin_offsetof(ch_hdr, table_pfn) == 52, "channel page table offset");
+_Static_assert(__builtin_offsetof(ch_hdr, a_wr) == 320, "channel write offset");
+_Static_assert(__builtin_offsetof(ch_hdr, b_rd) == 512, "channel read offset");
 #endif

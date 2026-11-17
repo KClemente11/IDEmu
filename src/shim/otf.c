@@ -26,5 +26,9 @@ int OTF_error(scope_t *s,const char *m){ emit("E",s,m); return 0; }
 int OTF_warning(scope_t *s,const char *m){ emit("W",s,m); return 0; }
 u32 OTF_getUIntSetting(u32 a,u32 b){ return b; }
 /* scope ctor: same layout as the real one, no registration */
-void *_ZN17OTF_CppScopeEntryC2EPKch(scope_t *t,const char *n,u8 lvl){ t->id=0; t->name=n; t->a=t->b=0; t->c=t->d=0; t->lvl=(lvl&~3)|OTFLVL; return t; }
+void *_ZN17OTF_CppScopeEntryC2EPKch(scope_t *t,const char *n,u8 lvl){ t->id=0; t->name=n; t->a=t->b=0; t->c=t->d=0; t->lvl=(lvl&~3)|OTFLVL;
+  /* Welcome uses different trace bits from most apps. Keep its power-mode gate
+     visible in renderer.log while researching vehicle sleep/wake behavior. */
+  if(n&&prefix(n,"HmiHome_App_CHmiWelcomeActivity")) t->lvl|=0x44;
+  return t; }
 void *_ZN17OTF_CppScopeEntryC1EPKch(scope_t *t,const char *n,u8 lvl){ return _ZN17OTF_CppScopeEntryC2EPKch(t,n,lvl); }

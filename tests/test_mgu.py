@@ -1,5 +1,6 @@
 """iDrive 8: partes que não precisam do firmware."""
 import os, struct, sys, tempfile, unittest
+from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from idemu import mgu
 
@@ -23,7 +24,9 @@ class DtbTest(unittest.TestCase):
 class AngleTest(unittest.TestCase):
     def test_env_var_wins(self):
         old = os.environ.get('IDEMU_ANGLE'); os.environ['IDEMU_ANGLE'] = '/x/y'
-        try: self.assertEqual(mgu.find_angle(), '/x/y')
+        try:
+            with patch.object(sys, 'platform', 'darwin'):
+                self.assertEqual(mgu.find_angle(), '/x/y')
         finally:
             if old is None: del os.environ['IDEMU_ANGLE']
             else: os.environ['IDEMU_ANGLE'] = old

@@ -350,7 +350,9 @@ class MostCar(object):
     NAVINFO = (0xCD, 3)            # NavigationInfo
 
     def __init__(self, bridge):
+        from .power import EvoPower
         self.bridge = bridge
+        self.power = EvoPower()
         self.can = None
         self.gps = None
         self.map = None
@@ -483,6 +485,11 @@ class MostCar(object):
 
     def status_for(self, fblock, inst, fkt):
         """Bytes do Status de uma propriedade (ou None se ainda não sabemos montar)."""
+        # Native CDS GPSPosition/GPSExtendedInfo use NavigationInfo instance 1.
+        # The stock navigation display uses instance 3. Feed both from the same
+        # virtual GPS; registering instance 1 alone leaves CDS subscriptions silent.
+        if fblock == 0xCD and inst == 1 and fkt in (0x202, 0x203):
+            return self._nav_status(fblock, fkt)
         if (fblock, inst) in (self.NAV, self.NAVINFO):
             return self._nav_status(fblock, fkt)
         if (fblock, inst) == (0xDA, 1):
@@ -530,7 +537,8 @@ class MostCar(object):
             # 0x430 = estado de energia (u8<=16: 3 = PM_fullon_useron) e CPowerStateDetailed (u8: 0x64 -> PMD_Entertainmentmode_useron, logo 0x63 = PMD_Fullon_useron). Sem isso o HMI acha PM_alloff /
             # PMD_Sleepmode_Alloff (log "CDevCarPowerMode::onPxyPowerState ... PM_alloff") e os estados de menu que exigem terminal ligado ficam cinzas.
             on = int(self._sig('terminal_state', 69)) != 0
-            return bytes((3 if on else 0,)) if fkt == 0x430 else bytes((0x63 if on else 0,))
+            state = self.power.sample(on)
+            return bytes((state['power_state' if fkt == 0x430 else 'power_state_detailed'],))
         d = self._defaults().get('%02x:%d:%03x' % (fblock, inst, fkt))
         return bytes.fromhex(d) if d else None
 

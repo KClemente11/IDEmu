@@ -101,7 +101,7 @@ for line in SPEC.strip().splitlines():
         else: call.append(f'(unsigned)a[{i}]')
     c0 = f'p_{name}({", ".join(call)})'
     if ret == 'v': h.append(f'case OP_{name}: {pre}{c0}; break;')
-    else: h.append(f'case OP_{name}: {{ {pre}unsigned long r = (unsigned long)(long){c0}; wr(c, &r, 8); }} break;')
+    else: h.append(f'case OP_{name}: {{ {pre}ul r = (ul)(int64_t){c0}; wr(c, &r, 8); }} break;')
 all_ops = ops + HAND + ['EGL' + e for e in EGL]
 with open('gen_ops.h', 'w') as f:
     f.write('enum {\n' + ''.join(f'  OP_{n} = {i + 1},\n' for i, n in enumerate(all_ops)) + '};\n')

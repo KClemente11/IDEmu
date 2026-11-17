@@ -7,6 +7,22 @@ window.IDE = window.IDE || {};
 (function (IDE) {
   /* I18N-DICT-BEGIN */
   const DICT = [
+    ['Energia / boas-vindas', 'Power / welcome'],
+    ['Verificado em 007_051_002 com PRODUKTLINIE=35up, incluindo F30 e ID6 Light. Defina a linha de produto em Coding e grave a unidade virtual antes de testar.', 'Verified on 007_051_002 with PRODUKTLINIE=35up, including F30 and ID6 Light. Set the product line in Coding and flash the virtual head unit before testing.'],
+    ['Mostre a tela de boas-vindas do firmware manualmente ou quando o carro virtual acordar.', 'Show the firmware welcome screen manually, or when the virtual car wakes from sleep.'],
+    ['Os controles de boas-vindas exigem um ambiente iDrive 5 ou 6 em execução', 'Welcome controls require a running iDrive 5 or 6 environment'],
+    ['Seguindo a ignição', 'Following ignition'],
+    ['Dormindo', 'Sleeping'],
+    ['Acordado', 'Awake'],
+    ['Boas-vindas ativas', 'Welcome active'],
+    ['{seconds} segundos restantes', '{seconds} seconds remaining'],
+    ['Mostrar boas-vindas', 'Show welcome'],
+    ['Dormir', 'Sleep'],
+    ['Acordar', 'Wake'],
+    ['Seguir a ignição', 'Follow ignition'],
+    ['Mostrar boas-vindas ao acordar', 'Show welcome on wake'],
+    ['Duração das boas-vindas (segundos)', 'Welcome duration (seconds)'],
+    ['Após o intervalo de boas-vindas, o modo normal retorna. Seguir a ignição libera o controle manual de energia.', 'After the welcome interval, normal power mode returns. Follow ignition releases the manual power override.'],
     /* ---- chrome (index.html, util.js) ---- */
     ['IDEmu – Emulador iDrive', 'IDEmu – iDrive emulator'],
     ['IDEmu – início', 'IDEmu – home'],

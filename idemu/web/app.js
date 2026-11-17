@@ -213,7 +213,7 @@
     }
     async function buildEnv(e, b) {
       await IDE.busy(b, async () => {
-        try { await post('/api/env/' + e.id + '/build'); toast(IDE.t('Build iniciado para "{name}".', { name: e.name }), 'info'); await IDE.refreshState().catch(() => {}); } catch (er) { toastErr(er); }
+        try { await post('/api/env/' + e.id + '/build', { force: true }); toast(IDE.t('Build iniciado para "{name}".', { name: e.name }), 'info'); await IDE.refreshState().catch(() => {}); } catch (er) { toastErr(er); }
       });
     }
     async function dupEnv(e) {

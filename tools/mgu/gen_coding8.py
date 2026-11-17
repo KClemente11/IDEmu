@@ -62,20 +62,17 @@ def from_psdz(psdz, out):
     import build_image as B
     from ext4ls import E4
 
-    def grab(e, p, dst):
-        t = e.inode(e.lookup(p))
-        while stat.S_ISLNK(e.mode(t)):
-            p = os.path.join(os.path.dirname(p), e.data(t).decode())
-            t = e.inode(e.lookup(p))
-        with open(dst, 'wb') as f:
-            f.write(e.data(t))
-    with tempfile.TemporaryDirectory(prefix='coding8', dir=os.path.dirname(B.OUT)) as d:
+    output_parent = os.path.dirname(os.path.abspath(out))
+    os.makedirs(output_parent, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='coding8', dir=output_parent) as d:
         for pkg, member, raw, src, dst in (('swfl_00009ff7', 'mgu22-bmw-image-mgu22-sa8155.ext4.simg.bin.gz', 'root', '/usr/share/sysfunc/coding/cafd_mgu_02_a.bin', 'cafd.bin'),
                                            ('swfl_00009fc6', 'mgu22-ivi-sa8155.ext4.simg.bin.gz', 'ivi', '/rootfs/usr/share/hmi/data/ro/MGU22_Coding.txt', 'coding.txt')):
-            B.member(os.path.join(psdz, 'swe/swfl', '%s.bin.%s' % (pkg, B.VER)), member, d + '/x.gz')
+            B.member(B.package(psdz, 'swfl', pkg.removeprefix('swfl_'), B.VER), member, d + '/x.gz')
             B.simg(d + '/x.gz', d + '/%s.raw' % raw)
             os.unlink(d + '/x.gz')
-            grab(E4(d + '/%s.raw' % raw), src, d + '/' + dst)
+            image = E4(d + '/%s.raw' % raw)
+            try: B.grab(image, src, d + '/' + dst)
+            finally: image.f.close()
             os.unlink(d + '/%s.raw' % raw)
         data = build(d + '/cafd.bin', d + '/coding.txt')
     write(data, out)

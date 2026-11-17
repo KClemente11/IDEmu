@@ -35,8 +35,59 @@
   /* ====================================================================== CAN */
   IDE.tabDefs.can = {
     mount(host, ctx) {
-      const s = sub(host, [['sig', 'Sinais', signalsPane], ['mon', 'Monitor', monitorPane], ['uds', 'UDS', udsPane], ['scn', 'Cenários', scenariosPane], ['rec', 'Gravar / injetar', recPane]], 'can.sub', 'sig');
+      const s = sub(host, [['sig', 'Sinais', signalsPane], ['power', 'Power / welcome', powerPane], ['mon', 'Monitor', monitorPane], ['uds', 'UDS', udsPane], ['scn', 'Cenários', scenariosPane], ['rec', 'Gravar / injetar', recPane]], 'can.sub', 'sig');
       return { show: s.show, hide: s.hide, destroy: s.destroy, onStatus(st) { s.each((p) => p.onStatus && p.onStatus(st)); } };
+
+      function powerPane(el) {
+        let stop = null, busy = false, current = null;
+        const note = h('div', { class: 'note' }, 'Show the firmware welcome screen manually, or when the virtual car wakes from sleep.');
+        const unavailable = h('div', { class: 'note warn' }, 'Welcome controls require a running iDrive 5 or 6 environment');
+        const state = h('div', { class: 'note', role: 'status', 'aria-live': 'polite' });
+        const onWake = h('input', { type: 'checkbox' });
+        const duration = h('input', { type: 'number', class: 'input sm', min: 1, max: 60, step: 1, value: 10, 'aria-label': 'Welcome duration (seconds)' });
+        const labels = { auto: 'Following ignition', sleep: 'Sleeping', awake: 'Awake', welcome: 'Welcome active' };
+        const buttons = {};
+        function paint(d) {
+          current = d;
+          unavailable.hidden = !!d.running;
+          state.hidden = !d.running;
+          onWake.disabled = duration.disabled = busy || !d.running;
+          Object.entries(buttons).forEach(([a, b]) => { b.disabled = busy || !d.running || (a === 'welcome' && d.mode === 'welcome'); });
+          if (!d.running) return;
+          state.textContent = IDE.t(labels[d.mode] || 'Following ignition') + (d.mode === 'welcome' ? ' · ' + IDE.t('{seconds} seconds remaining', { seconds: d.remaining }) : '');
+          if (!busy && document.activeElement !== onWake) onWake.checked = !!d.on_wake;
+          if (!busy && document.activeElement !== duration) duration.value = d.duration;
+        }
+        async function act(action) {
+          busy = true; paint(current || {});
+          try { current = await post('/api/power/action', { action }); }
+          catch (e) { toastErr(e); }
+          finally { busy = false; paint(current || {}); }
+        }
+        async function configure() {
+          const seconds = Number(duration.value);
+          if (!Number.isFinite(seconds) || seconds < 1 || seconds > 60) { duration.reportValidity(); return; }
+          busy = true; paint(current || {});
+          try { current = await post('/api/power/config', { on_wake: onWake.checked, duration: seconds }); }
+          catch (e) { toastErr(e); }
+          finally { busy = false; paint(current || {}); }
+        }
+        onWake.addEventListener('change', configure);
+        duration.addEventListener('change', configure);
+        const toolbar = h('div', { class: 'toolbar' });
+        [['welcome', 'Show welcome'], ['sleep', 'Sleep'], ['wake', 'Wake'], ['auto', 'Follow ignition']].forEach(([a, label]) => {
+          buttons[a] = h('button', { type: 'button', class: 'btn sm', onclick: () => act(a), disabled: true }, label);
+          toolbar.appendChild(buttons[a]);
+        });
+        IDE.add(el, note,
+          h('p', { class: 'muted small' }, 'Verified on 007_051_002 with PRODUKTLINIE=35up, including F30 and ID6 Light. Set the product line in Coding and flash the virtual head unit before testing.'),
+          unavailable, state, toolbar,
+          h('label', { class: 'check' }, onWake, h('span', null, 'Show welcome on wake')),
+          h('label', { class: 'check' }, h('span', null, 'Welcome duration (seconds)'), duration),
+          h('p', { class: 'muted small' }, 'After the welcome interval, normal power mode returns. Follow ignition releases the manual power override.'));
+        async function poll() { const d = await api('/api/power/state'); if (!busy) paint(d); }
+        return { show() { stop = IDE.loop(poll, 500); }, hide() { if (stop) stop(); stop = null; }, destroy() { if (stop) stop(); } };
+      }
 
       /* ---- sinais ---- */
       function signalsPane(el) {

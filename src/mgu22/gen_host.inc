@@ -162,10 +162,10 @@ case OP_UseProgram: p_UseProgram((unsigned)a[0]); break;
 case OP_VertexAttribDivisor: p_VertexAttribDivisor((unsigned)a[0], (unsigned)a[1]); break;
 case OP_VertexAttribPointer: p_VertexAttribPointer((unsigned)a[0], (int)a[1], (unsigned)a[2], (unsigned char)a[3], (int)a[4], (const void *)a[5]); break;
 case OP_Viewport: p_Viewport((int)a[0], (int)a[1], (int)a[2], (int)a[3]); break;
-case OP_CheckFramebufferStatus: { unsigned long r = (unsigned long)(long)p_CheckFramebufferStatus((unsigned)a[0]); wr(c, &r, 8); } break;
-case OP_CreateProgram: { unsigned long r = (unsigned long)(long)p_CreateProgram(); wr(c, &r, 8); } break;
-case OP_CreateShader: { unsigned long r = (unsigned long)(long)p_CreateShader((unsigned)a[0]); wr(c, &r, 8); } break;
-case OP_GetError: { unsigned long r = (unsigned long)(long)p_GetError(); wr(c, &r, 8); } break;
-case OP_GetAttribLocation: { char *s1 = scratch(c, a[1]); rd(c, s1, a[1]); unsigned long r = (unsigned long)(long)p_GetAttribLocation((unsigned)a[0], s1); wr(c, &r, 8); } break;
-case OP_GetUniformLocation: { char *s1 = scratch(c, a[1]); rd(c, s1, a[1]); unsigned long r = (unsigned long)(long)p_GetUniformLocation((unsigned)a[0], s1); wr(c, &r, 8); } break;
+case OP_CheckFramebufferStatus: { ul r = (ul)(int64_t)p_CheckFramebufferStatus((unsigned)a[0]); wr(c, &r, 8); } break;
+case OP_CreateProgram: { ul r = (ul)(int64_t)p_CreateProgram(); wr(c, &r, 8); } break;
+case OP_CreateShader: { ul r = (ul)(int64_t)p_CreateShader((unsigned)a[0]); wr(c, &r, 8); } break;
+case OP_GetError: { ul r = (ul)(int64_t)p_GetError(); wr(c, &r, 8); } break;
+case OP_GetAttribLocation: { char *s1 = scratch(c, a[1]); rd(c, s1, a[1]); ul r = (ul)(int64_t)p_GetAttribLocation((unsigned)a[0], s1); wr(c, &r, 8); } break;
+case OP_GetUniformLocation: { char *s1 = scratch(c, a[1]); rd(c, s1, a[1]); ul r = (ul)(int64_t)p_GetUniformLocation((unsigned)a[0], s1); wr(c, &r, 8); } break;
 #endif

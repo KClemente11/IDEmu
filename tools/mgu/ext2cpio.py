@@ -24,4 +24,7 @@ if PFX:
         q=(q+'/'+c).lstrip('/'); ent(q,0o40755,b'',1)
 walk(e.lookup(SRC) if SRC!='/' else 2,PFX.strip('/'))
 ent('TRAILER!!!',0,b'',1)
+# runpy in the frozen app keeps these globals alive. Flush explicitly before
+# the helper process exits; otherwise its buffered tail can be lost.
+o.close(); e.f.close()
 print('entradas',n[0],'bytes',n[1])

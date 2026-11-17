@@ -184,6 +184,10 @@ class Runtime:
         for n in ('boot.ifs', 'sda.img', 'sdb.img', 'shim.img'):
             if not os.path.isfile(os.path.join(self.img, n)):
                 raise RuntimeError('imagem ausente (%s): compile o ambiente primeiro' % n)
+        from .shim_update import refresh
+        if refresh(self.img):
+            self.want_cold = True
+            self.con.append('[idemu] Updated emulator guest libraries; using a cold boot.')
         import shutil
         shutil.rmtree(self.run, ignore_errors=True); os.makedirs(self.ctl); os.makedirs(self.logd, exist_ok=True)
         self.state = 'booting'; self.err = None; self.t0 = time.time(); self.marks = {}; self.step = 'Iniciando'; self.pct = 1; self._fm = None; self._lastseq = None; self.fps_t = collections.deque(maxlen=400)
@@ -560,7 +564,10 @@ class Runtime:
             self.gps = gps.GpsSim(can=self.can, tcp_port=net.get('gps_port')); self.gps.start()
             self.map = mapsvc.MapService(self.ctl, self.gps, catalog.load_settings(), input_endpoint=self.input_endpoint); self.map.start()
             if getattr(self, 'v850', None): self.v850.bridge.car.map = self.map
-            if getattr(self, 'v850', None): self.v850.bridge.car.gps = self.gps; self.v850.bridge.car.attach_can(self.can)      # dados do carro -> HMI (MOST, ponte do canal 25)
+            if getattr(self, 'v850', None):
+                self.v850.bridge.car.power.configure(self.env.get('welcome', {}))
+                self.v850.bridge.car.gps = self.gps
+                self.v850.bridge.car.attach_can(self.can)      # dados do carro -> HMI (MOST, ponte do canal 25)
             # Canal de arquivos CAN/GPS no guest (/var/idemu/{can,gps}, UART1): ninguém no guest o consome desde que os dados chegam ao HMI pelo MOST
             # (idemu/most.py) e, ligado, ele derruba o `most` (ver docs/V850.md) -> só com IDEMU_DATA_CHANNEL=1.
             # emulated diagnostic gateway: UDS requests from the guest come back over the same UART and are answered here (idemu/uds.py)

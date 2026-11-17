@@ -40,7 +40,7 @@ def runtime_available(env):
     kind = env.get('kind')
     if not catalog.backend_supported(kind):
         return False
-    if sys.platform != 'win32' or kind in ('cic', 'mgu7'):
+    if sys.platform != 'win32' or kind in ('cic', 'mgu7', 'mgu22'):
         return True
     version = (env.get('coding') or {}).get('hmi_version') or 'id6_light'
     return version.startswith('id6') and catalog.native_evo_ready()
@@ -218,16 +218,18 @@ class App:
                 target = os.path.join(os_dir, d[len(base):]); os.makedirs(target, exist_ok=True)
                 shutil.copy(src, target)
         shutil.rmtree(tmp, ignore_errors=True)
-    def start_build(self, eid):
+    def start_build(self, eid, force=False):
         env = self.read_env(eid)
         require_system_files(env)
         kind = env.get('kind')
         if self.rt and self.rt.id == eid and self.rt.state != 'stopped': raise ApiError('pare o ambiente antes de compilar')
+        if kind and self.rt and self.rt.state in ('booting', 'running') and self.rt.env.get('kind') == kind:
+            raise ApiError('Stop the running environment before rebuilding its shared image.', 409)
         b = self.builds.get(eid)
         if b and b['state'] == 'building': raise ApiError('já compilando')
         if (self.flashes.get(eid) or {}).get('state') == 'running': raise ApiError('aguarde a gravação da codificação terminar')
         if kind is not None:
-            if self.build_info(eid, env)['state'] == 'ready':
+            if not force and self.build_info(eid, env)['state'] == 'ready':
                 self.builds.pop(eid, None); return
             for oid, ob in self.builds.items():
                 if oid != eid and ob.get('state') == 'building' and self.env_kind(oid) == kind: raise ApiError('outro ambiente já está montando a imagem desta geração; aguarde')
@@ -239,7 +241,10 @@ class App:
             try:
                 require_system_files(env)
                 if kind is not None:
-                    runtime_module(kind).build(catalog.effective_psdz(kind), log=log, progress=prog)
+                    mod = runtime_module(kind)
+                    mod.build(catalog.effective_psdz(kind), log=log, progress=prog)
+                    if kind == 'mgu22' and not mod.image_ready():
+                        raise RuntimeError('The iDrive 8 build did not produce a valid image. See the build log.')
                 else:
                     from . import builder
                     builder.build(env, self.env_dir(eid), log=log, progress=prog)
@@ -596,7 +601,7 @@ class H(BaseHTTPRequestHandler):
             if os.path.isfile(root): root = os.path.dirname(root)
             if not os.path.isdir(root): raise ApiError('pasta inexistente', 404)
             req = catalog.required_packages(kind)
-            r = catalog.scan_folder(root, [x['id'] for x in req])
+            r = catalog.scan_folder(root, [x['id'] for x in req], kind=kind)
             want = {x['id']: x['version'] for x in req}; n = 0
             for sid, files in r['files'].items():
                 for f in files:
@@ -644,7 +649,7 @@ class H(BaseHTTPRequestHandler):
                     from urllib.parse import quote
                     return 200, body, ctype, {'Content-Disposition': "%s; filename*=UTF-8''%s" % (disp, quote(name))}
                 raise ApiError('rota desconhecida', 404)
-            if act == 'build' and m == 'POST': A.start_build(eid); return {'ok': True}
+            if act == 'build' and m == 'POST': A.start_build(eid, force=bool(d.get('force'))); return {'ok': True}
             if act == 'build':
                 A.load_env(eid); b = A.builds.get(eid); i = A.build_info(eid)
                 i['log'] = list(b['log'][-60:]) if b else []; return i
@@ -754,6 +759,7 @@ class H(BaseHTTPRequestHandler):
             except OSError as e:
                 raise ApiError('não consegui abrir as portas %s e %s para o celular (%s)' % (phone.HTTP_PORT, phone.HTTPS_PORT, e.strerror or e), 409)
             return ph.state()
+        if P[0] == 'power': return self.api_power(m, path, d)
         if P[0] == 'can': return self.api_can(m, path, q, d)
         if P[0] == 'uds': return self.api_uds(m, path, q, d)
         if path == 'plugins/navbridge' and m == 'POST':     # NavBridge virtual feed: runs its injector in the guest (agent.sh 'N')
@@ -769,6 +775,31 @@ class H(BaseHTTPRequestHandler):
             if not rt.ssh: return {'port': rt.env.get('net', {}).get('ssh_port'), 'host': '127.0.0.1', 'user': '', 'key_path': '', 'command': '', 'state': 'down', 'note': 'SSH ainda não iniciado'}
             return rt.ssh.info()
         raise ApiError('rota desconhecida: ' + path, 404)
+    def api_power(self, m, path, d):
+        rt = APP.rt
+        bridge = getattr(getattr(rt, 'v850', None), 'bridge', None)
+        car = getattr(bridge, 'car', None)
+        supported = bool(rt and rt.env.get('kind') is None)
+        running = bool(supported and rt.state == 'running' and car and rt.can)
+        if path == 'power/state' and m == 'GET':
+            return {'supported': supported, 'running': running,
+                    **(car.power.sample(car._sig('terminal_state', 69) != 0) if running else {})}
+        if not running:
+            raise ApiError('Welcome controls require a running iDrive 5 or 6 environment', 409)
+        if path == 'power/config' and m == 'POST':
+            try: config = car.power.configure(d)
+            except ValueError as e: raise ApiError(str(e))
+            rt.env['welcome'] = config
+            APP.save_env(rt.env)
+        elif path == 'power/action' and m == 'POST':
+            try: car.power.action(d.get('action'))
+            except ValueError as e: raise ApiError(str(e))
+        else:
+            raise ApiError('Unknown power route', 404)
+        car.publish_all()
+        return {'supported': True, 'running': True,
+                **car.power.sample(car._sig('terminal_state', 69) != 0)}
+
     def api_can(self, m, path, q, d):
         can = APP.need_can()
         if path == 'can/signals': return can.snapshot()

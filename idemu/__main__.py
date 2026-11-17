@@ -22,7 +22,7 @@ def main(argv):
         for e in A.list_envs(): print('%-20s %-6s %-5s %s' % (e['id'], e['chassis'], e['brand'], e['build']['state']))
         return 0
     if cmd == 'build':
-        A.start_build(argv[1])
+        A.start_build(argv[1], force=True)
         import time
         last = None
         while True:

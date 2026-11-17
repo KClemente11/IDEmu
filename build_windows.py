@@ -8,10 +8,39 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from uuid import uuid4
 
 
 ROOT = Path(__file__).resolve().parent
+
+
+def require_mgu8_helpers(native, guest):
+    """A native installer must not silently ship without its iDrive 8 backend."""
+    executables = ('qemu-system-aarch64.exe', 'mguhost.exe')
+    for name in executables:
+        path = native / name
+        if not path.is_file():
+            raise ValueError(f'Missing {path}. Build the native helpers first.')
+        with path.open('rb') as binary:
+            if binary.read(2) != b'MZ': raise ValueError(f'{path} is not a Windows executable.')
+    from tools.mgu.build_guest8 import validate_guest
+    try: validate_guest(guest)
+    except (OSError, ValueError) as error:
+        raise ValueError(f'iDrive 8 guest helpers are missing or invalid: {error}') from error
+    return executables
+
+
+def publish_bundle(staged, target, timeout=15):
+    """Windows scanners may briefly hold newly copied executables without delete sharing."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            staged.rename(target)
+            return
+        except PermissionError:
+            if target.exists() or time.monotonic() >= deadline: raise
+            time.sleep(.5)
 
 
 def stage_wsl_payload(destination):
@@ -61,7 +90,7 @@ def copy_overlay(source, destination):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--backend', choices=('wsl', 'native-prep', 'native'), default='wsl',
-                        help='package the WSL2 runtime, the native firmware builder, or the native iDrive 4 and 6 runtime')
+                        help='package the WSL2 runtime, the native firmware builder, or the native iDrive 4/6/7/8 runtime')
     parser.add_argument('--output-dir', type=Path, default=ROOT / 'dist')
     args = parser.parse_args()
     if sys.platform != 'win32' or platform.machine().upper() not in ('AMD64', 'X86_64'):
@@ -132,6 +161,26 @@ def main():
                     command += ['--add-data', f'{mgu_tools}:tools/mgu', '--add-data', f'{guest7}:idemu/guest7']
                 else:
                     print('Note: iDrive 7 is left out of this build (qemu-system-x86_64.exe, glhost7.exe or qemu-share is missing).')
+                # iDrive 8 is part of every native bundle; firmware and sysroot libraries stay local.
+                guest8 = ROOT / 'idemu' / 'guest8'
+                if not guest8.is_dir(): guest8 = native / 'guest8'
+                try: mgu8_executables = require_mgu8_helpers(native, guest8)
+                except ValueError as error: parser.error(str(error))
+                from tools.mgu.build_guest8 import GUEST_FILES
+                native_executables += mgu8_executables
+                command += ['--hidden-import', 'idemu.mgu', '--hidden-import', 'idemu.coding8',
+                            '--hidden-import', 'gzip', '--hidden-import', 'tarfile']
+                mgu_tools = work / 'mgu'
+                mgu_tools.mkdir(exist_ok=True)
+                for name_required in ('build_image.py', 'build_guest8.py', 'simg2raw.py', 'ext2cpio.py',
+                                      'ext4ls.py', 'gencoding.py', 'gen_coding8.py', 'guest_boot.sh', 'virt_mgu22.dtb', 'smoke_windows8.py'):
+                    shutil.copy2(ROOT / 'tools' / 'mgu' / name_required, mgu_tools)
+                if not any(str(mgu_tools) + ':tools/mgu' == item for item in command):
+                    command += ['--add-data', f'{mgu_tools}:tools/mgu']
+                staged_guest8 = work / 'guest8'
+                staged_guest8.mkdir()
+                for filename in GUEST_FILES: shutil.copy2(guest8 / filename, staged_guest8)
+                command += ['--add-data', f'{staged_guest8}:idemu/guest8']
                 for file in sorted(native.iterdir()):
                     if file.name in native_executables or file.suffix.lower() == '.dll':
                         command += ['--add-data', f'{file}:bin/windows']
@@ -146,7 +195,7 @@ def main():
         publish = output_dir / f'.{name}-{uuid4().hex}'
         try:
             shutil.copytree(bundle, publish)
-            publish.rename(target)
+            publish_bundle(publish, target)
         finally:
             if publish.is_dir() and publish.resolve().parent == output_dir:
                 shutil.rmtree(publish)

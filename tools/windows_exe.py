@@ -39,7 +39,7 @@ def run_tool(script, argv):
         return 2
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, 'reconfigure'):
-            stream.reconfigure(errors='replace')
+            stream.reconfigure(errors='replace', line_buffering=True, write_through=True)
     sys.argv = [str(script), *argv]
     sys.path.insert(0, str(script.parent))
     runpy.run_path(str(script), run_name='__main__')

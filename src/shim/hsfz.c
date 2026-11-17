@@ -73,7 +73,10 @@ static int ask_host(u8 src, u8 tgt, const u8 *req, u32 n, u8 *rep, u32 cap){
 
 static void *client(void *arg){
   int fd=(int)(long)arg;
-  u8 hdr[6], *msg=(u8*)malloc(8200), *rep=(u8*)malloc(2048);
+  /* The compiler combines the big-endian byte reads below into LDR/REV.
+     QNX faults on an unaligned word read, so keep this wire header aligned. */
+  u8 hdr[6] __attribute__((aligned(4)));
+  u8 *msg=(u8*)malloc(8200), *rep=(u8*)malloc(2048);
   while(msg&&rep&&rd(fd,hdr,6)){
     u32 len=(u32)hdr[0]<<24|(u32)hdr[1]<<16|(u32)hdr[2]<<8|hdr[3]; u16 ctrl=(u16)(hdr[4]<<8|hdr[5]);
     if(len>8192||!rd(fd,msg,len)) break;

@@ -1,23 +1,29 @@
-// mguhost: renderizador do iDrive 8 no Mac. Lê os canais do guest direto da RAM compartilhada do QEMU e executa as
-// chamadas GLES no ANGLE (Metal). Cada thread do guest tem um canal e uma thread aqui. Quadros vão para <dir>/frame.rgba.
-// Uso: mguhost <nome shm> <tamanho em MiB> <dir> <pasta do ANGLE>
+// iDrive 8 renderer: guest channels in shared QEMU RAM, GLES through ANGLE.
+// Metal on macOS; D3D11 on Windows. Frames use the app's frame.rgb protocol.
+// Usage: mguhost <mapping> <MiB> <directory> <ANGLE directory> [Windows UDP port]
+#ifdef _WIN32
+#include "win32_host8.h"
+#else
 #include <dlfcn.h>
 #include <fcntl.h>
-#include <pthread.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
+#endif
+#include <inttypes.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <pthread.h>
 #include "chan.h"
 #include "gen_ops.h"
-typedef unsigned long ul;
-#define GUEST_BASE 0x40000000ul
+typedef ch_u64 ul;
+#define GUEST_BASE UINT64_C(0x40000000)
 static char *ram; static ul ramsz; static const char *outdir;
 static void *hegl, *hgl;
 static void *(*egp)(const char *);
@@ -33,7 +39,7 @@ static void *dpy;
 #define GEN_DECL
 #include "gen_host.inc"
 #undef GEN_DECL
-static void (*g_BufferData)(unsigned, long, const void *, unsigned);
+static void (*g_BufferData)(unsigned, intptr_t, const void *, unsigned);
 static void (*g_TexImage2D)(unsigned, int, int, int, int, int, unsigned, unsigned, const void *);
 static void (*g_TexSubImage2D)(unsigned, int, int, int, int, int, unsigned, unsigned, const void *);
 static void (*g_TexSubImage3D)(unsigned, int, int, int, int, int, int, int, unsigned, unsigned, const void *);
@@ -70,17 +76,28 @@ static void *ctxs[MAXO]; static void *ctxcfg[MAXO]; static int nctx = 1;
 static struct { void *s; int w, h; void *cfg; } sfs[MAXO];
 // --- saída de quadros
 static int frame_fd = -1; static char *frame_map; static ul frame_sz;
-static volatile unsigned long frames; static double last_write;
+static volatile ul frames; static double last_write;
+#ifdef _WIN32
+static double now(void) { return win_now(); }
+#else
 static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec * 1e-9; }
+#endif
 // Mesmo formato do glhost: "IDFR", seq, w, h, 16 bytes livres, RGB de cima para baixo. O seq só muda depois dos pixels.
 static unsigned char *frame_tmp; static ul frame_tmp_sz; static unsigned frame_seq;
 static void write_frame(int w, int h) {
   ul need = 32 + (ul)w * h * 3;
   if (frame_sz < need) {
     char p[1024]; snprintf(p, sizeof p, "%s/frame.rgb", outdir);
+#ifdef _WIN32
+    if (frame_map) UnmapViewOfFile(frame_map);
+    frame_map = win_frame(p, need);
+    if (!frame_map) { fprintf(stderr, "frame mapping failed: %lu\n", GetLastError()); exit(1); }
+    frame_sz = need;
+#else
     if (frame_map) munmap(frame_map, frame_sz);
     if (frame_fd < 0) frame_fd = open(p, O_RDWR | O_CREAT, 0644);
     ftruncate(frame_fd, need); frame_map = mmap(0, need, PROT_READ | PROT_WRITE, MAP_SHARED, frame_fd, 0); frame_sz = need;
+#endif
     ((unsigned *)frame_map)[0] = 0x52464449; ((unsigned *)frame_map)[2] = w; ((unsigned *)frame_map)[3] = h;
   }
   if (frame_tmp_sz < (ul)w * h * 4) { free(frame_tmp); frame_tmp_sz = (ul)w * h * 4; frame_tmp = malloc(frame_tmp_sz); }
@@ -94,11 +111,12 @@ static void write_frame(int w, int h) {
 }
 // --- canal
 typedef struct Chan {
-  ul hphys; ch_hdr *h; unsigned *pfn; ul a_rd, b_wr; unsigned pa, pb; char *buf; ul bufsz; int dead; unsigned long nonce;
+  ul hphys; ch_hdr *h; unsigned *pfn; ul a_rd, b_wr; unsigned pa, pb; char *buf; ul bufsz; int dead; ul nonce;
   struct Chan *next;
   void *cur_tiny; int un_align, un_row, pk_align, pk_row;
 } Chan;
 static inline char *pg(ul pfn) { return ram + ((pfn << 12) - GUEST_BASE); }
+static int valid_pfn(ul pfn) { ul addr = pfn << 12; return addr >= GUEST_BASE && addr - GUEST_BASE <= ramsz - CH_PAGE; }
 static inline ul acq(volatile ul *p) { return __atomic_load_n(p, __ATOMIC_ACQUIRE); }
 static inline void rel(volatile ul *p, ul v) { __atomic_store_n(p, v, __ATOMIC_RELEASE); }
 static int alive(Chan *c) { return !memcmp(c->h->magic, CH_MAGIC, 16) && c->h->nonce == c->nonce; }
@@ -151,6 +169,9 @@ static int getint_count(unsigned p) {
 }
 static volatile int probe_x = -1, probe_y, probe_on; static unsigned probe_last; static int probe_n;
 static void dispatch(Chan *c, unsigned op, ul *a) {
+#ifdef _WIN32
+  win8_last_op = op;
+#endif
   switch (op) {
 #define GEN_CASE
 #include "gen_host.inc"
@@ -158,7 +179,7 @@ static void dispatch(Chan *c, unsigned op, ul *a) {
     case OP_PixelStorei:
       if (a[0] == 0x0D05) c->pk_align = (int)a[1]; else if (a[0] == 0x0D02) c->pk_row = (int)a[1];
       g_PixelStorei((unsigned)a[0], (int)a[1]); break;
-    case OP_BufferData: { char *p = a[2] ? payload(c, a[1]) : 0; g_BufferData((unsigned)a[0], (long)a[1], p, (unsigned)a[3]); } break;
+    case OP_BufferData: { char *p = a[2] ? payload(c, a[1]) : 0; g_BufferData((unsigned)a[0], (intptr_t)a[1], p, (unsigned)a[3]); } break;
     case OP_TexImage2D: { char *p = a[8] ? payload(c, a[8]) : 0; g_TexImage2D((unsigned)a[0], (int)a[1], (int)a[2], (int)a[3], (int)a[4], (int)a[5], (unsigned)a[6], (unsigned)a[7], p); } break;
     case OP_TexSubImage2D: { char *p = payload(c, a[8]); g_TexSubImage2D((unsigned)a[0], (int)a[1], (int)a[2], (int)a[3], (int)a[4], (int)a[5], (unsigned)a[6], (unsigned)a[7], p); } break;
     case OP_TexSubImage3D: { char *p = payload(c, a[10]); g_TexSubImage3D((unsigned)a[0], (int)a[1], (int)a[2], (int)a[3], (int)a[4], (int)a[5], (int)a[6], (int)a[7], (unsigned)a[8], (unsigned)a[9], p); } break;
@@ -210,8 +231,13 @@ static void dispatch(Chan *c, unsigned op, ul *a) {
       int n = (int)a[2]; int *at = (int *)scratch(c, n * 4ul + 8); if (n) rd(c, at, n * 4ul); at[n] = 0x3038;
       void *share = a[1] && a[1] < MAXO ? ctxs[a[1]] : 0, *cfg = a[0] && a[0] <= (ul)ncfg ? cfgs[a[0] - 1] : 0;
       void *x = e_CreateContext(dpy, cfg, share, at); ul id = 0;
-      if (x) { pthread_mutex_lock(&mu); id = nctx++; ctxs[id] = x; ctxcfg[id] = cfg; pthread_mutex_unlock(&mu); }
-      fprintf(stderr, "[mguhost] CreateContext share=%lu attrs(%d) -> id %lu err %x\n", a[1], n, id, x ? 0 : e_GetError());
+      if (x) {
+        pthread_mutex_lock(&mu);
+        if (nctx < MAXO) { id = nctx++; ctxs[id] = x; ctxcfg[id] = cfg; }
+        else e_DestroyContext(dpy, x);
+        pthread_mutex_unlock(&mu);
+      }
+      fprintf(stderr, "[mguhost] CreateContext share=%" PRIu64 " attrs(%d) -> id %" PRIu64 " err %x\n", a[1], n, id, x ? 0 : e_GetError());
       wr(c, &id, 8);
     } break;
     case OP_EGLDestroyContext: break;  // mantido: o processo inteiro morre junto com o HMI
@@ -220,7 +246,7 @@ static void dispatch(Chan *c, unsigned op, ul *a) {
       void *cfg = a[1] && a[1] <= (ul)ncfg ? cfgs[a[1] - 1] : 0;
       void *s = e_CreatePbufferSurface(dpy, cfg, pa);
       if (s && a[0] < MAXO) { sfs[a[0]].s = s; sfs[a[0]].w = (int)a[2]; sfs[a[0]].h = (int)a[3]; sfs[a[0]].cfg = cfg; }
-      fprintf(stderr, "[mguhost] superficie %lu %lux%lu -> %p err %x\n", a[0], a[2], a[3], s, s ? 0 : e_GetError());
+      fprintf(stderr, "[mguhost] superficie %" PRIu64 " %" PRIu64 "x%" PRIu64 " -> %p err %x\n", a[0], a[2], a[3], s, s ? 0 : e_GetError());
       ul ok = s != 0; wr(c, &ok, 8);
     } break;
     case OP_EGLDestroySurface: break;
@@ -233,11 +259,11 @@ static void dispatch(Chan *c, unsigned op, ul *a) {
     case OP_EGLSwap: {
       int id = (int)a[0]; double t = now();
       if (id < MAXO && sfs[id].s) {
-        unsigned long f = __atomic_add_fetch(&frames, 1, __ATOMIC_RELAXED);
+        ul f = __atomic_add_fetch(&frames, 1, __ATOMIC_RELAXED);
         if (probe_on) { probe_on--; fprintf(stderr, "[sonda] fim de quadro %d\n", probe_on); probe_last = 0; probe_n = 0; }
         if (t - last_write >= 0.033) { last_write = t; write_frame(sfs[id].w, sfs[id].h); }
         e_SwapBuffers(dpy, sfs[id].s);
-        if (f <= 5 || f % 120 == 1) fprintf(stderr, "[mguhost] quadro %lu\n", f);
+        if (f <= 5 || f % 120 == 1) fprintf(stderr, "[mguhost] quadro %" PRIu64 "\n", f);
       }
       ul ok = 1; wr(c, &ok, 8);
     } break;
@@ -245,7 +271,7 @@ static void dispatch(Chan *c, unsigned op, ul *a) {
       fprintf(stderr, "[mguhost] op desconhecido %u\n", op); c->dead = 1; pthread_exit(0);
   }
   static int errs;
-  if (errs < 60 && p_GetError) { unsigned e = p_GetError(); if (e) { errs++; fprintf(stderr, "[mguhost] GL erro %#x depois do op %u (args %#lx %#lx %#lx)\n", e, op, a[0], a[1], a[2]); } }
+  if (errs < 60 && p_GetError) { unsigned e = p_GetError(); if (e) { errs++; fprintf(stderr, "[mguhost] GL erro %#x depois do op %u (args %#" PRIx64 " %#" PRIx64 " %#" PRIx64 ")\n", e, op, a[0], a[1], a[2]); } }
 }
 // --- sonda de depuração: "x <px> <py>" no input.sock registra, no próximo quadro, cada desenho que muda aquele pixel
 static void probe_dump_prog(unsigned prog) {
@@ -291,11 +317,18 @@ static void *chan_thread(void *arg) {
 }
 static Chan *chans;
 static Chan *input_chan, *hmi_chan;
+static unsigned input_port;
 static void *input_thread(void *arg) {
+#ifdef _WIN32
+  SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  struct sockaddr_in a = {0}; a.sin_family = AF_INET; a.sin_addr.s_addr = htonl(INADDR_LOOPBACK); a.sin_port = htons(input_port);
+  if (s == INVALID_SOCKET || bind(s, (void *)&a, sizeof a)) { fprintf(stderr, "input bind failed: %d\n", WSAGetLastError()); exit(1); }
+#else
   // datagramas de texto em <dir>/input.sock: "d x y", "m x y", "u"
   char p[1024]; snprintf(p, sizeof p, "%s/input.sock", outdir); unlink(p);
   int s = socket(AF_UNIX, SOCK_DGRAM, 0); struct sockaddr_un a; memset(&a, 0, sizeof a); a.sun_family = AF_UNIX; strncpy(a.sun_path, p, sizeof a.sun_path - 1);
   if (bind(s, (void *)&a, sizeof a)) { perror("input.sock"); return 0; }
+  #endif
   char b[256];
   for (;;) {
     long n = recv(s, b, sizeof b - 2, 0); if (n <= 0) continue;
@@ -307,22 +340,33 @@ static void *input_thread(void *arg) {
   }
 }
 static void scan(void) {
+#ifndef _WIN32
   // só páginas já tocadas: ler o resto obrigaria o macOS a alocar toda a RAM do guest
   static char *vec; const ul HP = 16384; if (!vec) vec = malloc(ramsz / HP + 1);
   if (mincore(ram, ramsz, vec)) memset(vec, 1, ramsz / HP + 1);
+  #endif
   for (ul off = 0; off + CH_PAGE <= ramsz; off += CH_PAGE) {
+    #ifndef _WIN32
     if (!(vec[off / HP] & 1)) { off = (off / HP + 1) * HP - CH_PAGE; continue; }
+    #endif
     ch_hdr *h = (ch_hdr *)(ram + off);
-    if (*(uint64_t *)h->magic != 0x4d2d554d45444949ul && memcmp(h->magic, CH_MAGIC, 8)) continue;
     if (memcmp(h->magic, CH_MAGIC, 16)) continue;
+    if (h->version != 1 || h->pages_a != CH_RING_A / CH_PAGE || h->pages_b != CH_RING_B / CH_PAGE ||
+        h->ntable != (CH_RING_A + CH_RING_B) / CH_PAGE * 4 / CH_PAGE || h->role > 2) continue;
     int known = 0; for (Chan *k = chans; k; k = k->next) if (k->hphys == off && k->nonce == h->nonce && !k->dead) known = 1;
     if (known) continue;
     __atomic_thread_fence(__ATOMIC_SEQ_CST);
     Chan *c = calloc(1, sizeof(Chan)); c->hphys = off; c->h = h; c->nonce = h->nonce; c->pa = h->pages_a; c->pb = h->pages_b;
     ul tot = c->pa + c->pb; c->pfn = malloc(tot * 4);
-    for (ul i = 0; i < tot; i++) c->pfn[i] = *(unsigned *)(pg(h->table_pfn[i * 4 / CH_PAGE]) + (i * 4) % CH_PAGE);
+    int valid = 1;
+    for (ul i = 0; i < h->ntable; i++) if (!valid_pfn(h->table_pfn[i])) valid = 0;
+    if (valid) for (ul i = 0; i < tot; i++) {
+      c->pfn[i] = *(unsigned *)(pg(h->table_pfn[i * 4 / CH_PAGE]) + (i * 4) % CH_PAGE);
+      if (!valid_pfn(c->pfn[i])) valid = 0;
+    }
+    if (!valid) { free(c->pfn); free(c); continue; }
     c->next = chans; chans = c;
-    fprintf(stderr, "[mguhost] canal novo pid %u tid %u em %#lx\n", h->pid, h->tid, off + GUEST_BASE);
+    fprintf(stderr, "[mguhost] canal novo pid %u tid %u em %#" PRIx64 "\n", h->pid, h->tid, off + GUEST_BASE);
     if (h->role == 1) { input_chan = c; continue; }
     if (h->role == 2) { hmi_chan = c; continue; }
     pthread_t t; pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setstacksize(&at, 8 << 20); pthread_create(&t, &at, chan_thread, c);
@@ -330,21 +374,41 @@ static void scan(void) {
 }
 int main(int argc, char **argv) {
   if (argc < 5) { fprintf(stderr, "uso: mguhost ram.bin MiB dir angle\n"); return 2; }
-  ramsz = (ul)atol(argv[2]) << 20; outdir = argv[3];
+  ramsz = (ul)strtoull(argv[2], NULL, 10) << 20; outdir = argv[3];
+#ifdef _WIN32
+  SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+  SetUnhandledExceptionFilter(win8_crash);
+  if (argc < 6 || !(input_port = strtoul(argv[5], NULL, 10)) || input_port > 65535) return 2;
+  WSADATA ws; if (WSAStartup(MAKEWORD(2, 2), &ws)) return 1;
+  timeBeginPeriod(1);
+  ram = win_open_ram(argv[1], ramsz);
+  if (!ram) { fprintf(stderr, "RAM mapping failed: %lu\n", GetLastError()); return 1; }
+  char b[2048]; snprintf(b, sizeof b, "%s/libEGL.dll", argv[4]); hegl = LoadLibraryExA(b, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+  snprintf(b, sizeof b, "%s/libGLESv2.dll", argv[4]); hgl = LoadLibraryExA(b, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+  if (!hegl || !hgl) { fprintf(stderr, "ANGLE DLL load failed: %lu\n", GetLastError()); return 1; }
+#else
   int fd = shm_open(argv[1], O_RDWR); if (fd < 0) { perror("ram"); return 1; }
   ram = mmap(0, ramsz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0); if (ram == MAP_FAILED) { perror("mmap"); return 1; }
   char b[2048]; snprintf(b, sizeof b, "%s/libEGL.dylib", argv[4]); hegl = dlopen(b, RTLD_NOW | RTLD_GLOBAL);
   snprintf(b, sizeof b, "%s/libGLESv2.dylib", argv[4]); hgl = dlopen(b, RTLD_NOW | RTLD_GLOBAL);
   if (!hegl || !hgl) { fprintf(stderr, "ANGLE: %s\n", dlerror()); return 1; }
+  #endif
   egp = dlsym(hegl, "eglGetProcAddress");
 #define EL(N) e_##N = dlsym(hegl, "egl" #N)
   EL(GetPlatformDisplay); EL(Initialize); EL(BindAPI); EL(ChooseConfig); EL(GetConfigAttrib); EL(CreateContext); EL(DestroyContext);
   EL(CreatePbufferSurface); EL(DestroySurface); EL(MakeCurrent); EL(SwapBuffers); EL(GetError); EL(WaitGL);
+  if (!e_GetPlatformDisplay || !e_Initialize || !e_BindAPI || !e_CreateContext || !e_MakeCurrent) {
+    fprintf(stderr, "ANGLE is missing required EGL entry points\n"); return 1;
+  }
+#ifdef _WIN32
+  intptr_t at[] = { 0x3203, 0x3208, 0x3038, 0 }; /* ANGLE D3D11 */
+#else
   intptr_t at[] = { 0x3203, 0x3489, 0x3038, 0 };
+#endif
   dpy = e_GetPlatformDisplay(0x3202, 0, at); int ma = 0, mi = 0;
   if (!e_Initialize(dpy, &ma, &mi)) { fprintf(stderr, "eglInitialize falhou\n"); return 1; }
   e_BindAPI(0x30A0); load_gl();
-  fprintf(stderr, "[mguhost] ANGLE EGL %d.%d pronto, RAM %lu MiB\n", ma, mi, ramsz >> 20);
+  fprintf(stderr, "[mguhost] ANGLE EGL %d.%d pronto, RAM %" PRIu64 " MiB\n", ma, mi, ramsz >> 20);
   pthread_t it; pthread_create(&it, 0, input_thread, 0);
   double started = now();
   for (;;) { scan(); usleep(now() - started < 90 ? 250000 : 1000000); }
